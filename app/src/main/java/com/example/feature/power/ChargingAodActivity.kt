@@ -1,6 +1,11 @@
 package com.example.feature.power
 
+import android.content.Context
+import android.content.Intent
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,7 +16,6 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.animateIntOffsetAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
@@ -28,16 +32,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.ElectricBolt
+import androidx.compose.material.icons.rounded.FlashlightOff
+import androidx.compose.material.icons.rounded.FlashlightOn
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Style
 import androidx.compose.material.icons.rounded.Thermostat
 import androidx.compose.material3.Icon
@@ -54,18 +65,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -82,12 +94,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.cos
-import kotlin.math.roundToInt
 import kotlin.math.sin
 
 class ChargingAodActivity : ComponentActivity() {
+
+    private var torchEnabled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,14 +110,55 @@ class ChargingAodActivity : ComponentActivity() {
 
         setContent {
             AKitTheme(themeMode = ThemeMode.AMOLED, dynamicColor = false) {
-                ChargingAodScreen(onExit = { finish() })
+                ChargingAodScreen(
+                    onExit = { finish() },
+                    onToggleFlashlight = { desired -> toggleTorchSafely(desired) },
+                    onLaunchCamera = { launchCameraShortcut() },
+                )
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        PowerTelemetryEngine.setAodVisible(true)
+    }
+
+    override fun onStop() {
+        PowerTelemetryEngine.setAodVisible(false)
+        if (torchEnabled) {
+            toggleTorchSafely(false)
+        }
+        super.onStop()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    private fun toggleTorchSafely(enable: Boolean): Boolean {
+        return runCatching {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as? CameraManager ?: return false
+            val backCameraId = cm.cameraIdList.firstOrNull { id ->
+                val chars = cm.getCameraCharacteristics(id)
+                val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                hasFlash && facing == CameraCharacteristics.LENS_FACING_BACK
+            } ?: cm.cameraIdList.firstOrNull { id ->
+                cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            } ?: return false
+            cm.setTorchMode(backCameraId, enable)
+            torchEnabled = enable
+            enable
+        }.getOrDefault(false)
+    }
+
+    private fun launchCameraShortcut() {
+        val intent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { startActivity(intent) }
     }
 
     private fun hideSystemBars() {
@@ -119,10 +172,14 @@ class ChargingAodActivity : ComponentActivity() {
 @Composable
 private fun ChargingAodScreen(
     onExit: () -> Unit,
+    onToggleFlashlight: (Boolean) -> Boolean,
+    onLaunchCamera: () -> Unit,
 ) {
     val state by PowerTelemetryEngine.state.collectAsStateWithLifecycle()
     val settings = state.settings
     val accent = settings.aodAccent.composeColor
+
+    var flashlightOn by remember { mutableStateOf(false) }
 
     // Live digital clock
     var currentTimeText by remember { mutableStateOf(formatClockNow()) }
@@ -135,42 +192,44 @@ private fun ChargingAodScreen(
         }
     }
 
-    // OLED Burn-in Protection: gentle 8-point pixel orbit every 18 seconds
-    var shiftStep by remember { mutableIntStateOf(0) }
+    // Ultra-subtle OLED burn-in protection: 1–2px micro-drift every 60s via graphicsLayer (zero layout jumps)
+    var microDriftStep by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
-            delay(18_000L)
-            shiftStep = (shiftStep + 1) % 8
+            delay(60_000L)
+            microDriftStep = (microDriftStep + 1) % 8
         }
     }
 
-    val density = LocalDensity.current
-    val targetOffsetPx = remember(shiftStep, density) {
-        val orbitPointsDp = listOf(
-            0 to 0,
-            12 to -18,
-            16 to 8,
-            8 to 22,
-            -10 to 16,
-            -16 to -4,
-            -12 to -22,
-            4 to -10,
+    val driftOffsetsPx = remember {
+        listOf(
+            0f to 0f,
+            1.5f to -1.5f,
+            2f to 0.5f,
+            1f to 2f,
+            -1.5f to 1.5f,
+            -2f to -0.5f,
+            -1f to -2f,
+            0.5f to -1f,
         )
-        val (dx, dy) = orbitPointsDp[shiftStep]
-        with(density) { IntOffset(dx.dp.roundToPx(), dy.dp.roundToPx()) }
     }
-
-    val animatedBurnInOffset by animateIntOffsetAsState(
-        targetValue = targetOffsetPx,
-        animationSpec = tween(durationMillis = 1800, easing = LinearEasing),
-        label = "oled_burn_in_shift",
+    val (targetDx, targetDy) = driftOffsetsPx[microDriftStep]
+    val smoothDriftX by animateFloatAsState(
+        targetValue = targetDx,
+        animationSpec = tween(durationMillis = 2_400, easing = LinearEasing),
+        label = "oled_micro_drift_x",
+    )
+    val smoothDriftY by animateFloatAsState(
+        targetValue = targetDy,
+        animationSpec = tween(durationMillis = 2_400, easing = LinearEasing),
+        label = "oled_micro_drift_y",
     )
 
-    var showControlsHint by remember { mutableStateOf(true) }
-    LaunchedEffect(showControlsHint) {
-        if (showControlsHint) {
-            delay(4_500L)
-            showControlsHint = false
+    var showStyleControls by remember { mutableStateOf(true) }
+    LaunchedEffect(showStyleControls) {
+        if (showStyleControls) {
+            delay(5_000L)
+            showStyleControls = false
         }
     }
 
@@ -181,21 +240,25 @@ private fun ChargingAodScreen(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = { onExit() },
-                    onTap = { showControlsHint = true },
+                    onTap = { showStyleControls = true },
                 )
             }
             .testTag("charging_aod_root"),
-        contentAlignment = Alignment.Center,
     ) {
-        // Burn-in shifted primary AOD cluster
+        // Main OLED cluster with ultra-subtle graphicsLayer micro-drift (never triggers relayout)
         Column(
             modifier = Modifier
-                .offset { animatedBurnInOffset }
+                .align(Alignment.Center)
+                .graphicsLayer {
+                    translationX = smoothDriftX
+                    translationY = smoothDriftY
+                }
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp),
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 72.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(22.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             // Clock + Date header
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -203,20 +266,24 @@ private fun ChargingAodScreen(
                     text = currentTimeText,
                     fontFamily = SpaceGroteskFontFamily,
                     fontWeight = FontWeight.Light,
-                    fontSize = 62.sp,
+                    fontSize = 58.sp,
                     letterSpacing = (-2).sp,
-                    color = Color(0xFFE6EDF6),
+                    color = Color(0xFFEAF2F8),
+                    maxLines = 1,
+                    softWrap = false,
                 )
                 Text(
                     text = currentDateText.uppercase(Locale.US),
                     style = MonoLabelStyle,
-                    color = Color(0xFF7D8B9E),
+                    color = Color(0xFF7D8C9F),
+                    maxLines = 1,
+                    softWrap = false,
                 )
             }
 
             // Selected AOD Visualization Style
             when (settings.aodStyle) {
-                AodVisualStyle.SPEEDOMETER_RING -> AodSpeedometerRing(
+                AodVisualStyle.SPEEDOMETER_RING -> AodSegmentedRingGauge(
                     state = state,
                     accent = accent,
                 )
@@ -230,51 +297,90 @@ private fun ChargingAodScreen(
                 )
             }
 
-            // Live Telemetry Readout Pill Strip
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            // Live Wattage & Estimate Pill
+            Surface(
+                shape = CircleShape,
+                color = Color(0xFF0A0F16),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
             ) {
-                AodMiniMetricBadge(
-                    icon = Icons.Rounded.Bolt,
-                    text = "${abs(state.currentNowMa)} mA",
-                    accent = accent,
-                )
-                AodMiniMetricBadge(
-                    icon = Icons.Rounded.Thermostat,
-                    text = settings.tempUnit.format(state.temperatureCelsius),
-                    accent = accent,
-                )
-                if (settings.dualCellMode) {
-                    Surface(
-                        shape = CircleShape,
-                        color = accent.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-                    ) {
-                        Text(
-                            text = "2S",
-                            style = MonoLabelStyle,
-                            color = accent,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        )
-                    }
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Bolt,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = String.format(Locale.US, "%.1f W", state.wattage),
+                        style = MonoMetricStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                        color = accent,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                    Text(
+                        text = "•",
+                        style = MonoLabelStyle,
+                        color = Color(0xFF475569),
+                    )
+                    Text(
+                        text = state.estimatedTimeLabel,
+                        style = MonoLabelStyle.copy(fontSize = 12.sp),
+                        color = Color(0xFFD6E2EE),
+                        maxLines = 1,
+                        softWrap = false,
+                    )
                 }
+            }
+
+            // Compact 3-Card Telemetry Row: Temp, Voltage, Estimate
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 380.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                AodTelemetryCompactCard(
+                    icon = Icons.Rounded.Thermostat,
+                    label = "TEMP",
+                    value = settings.tempUnit.format(state.temperatureCelsius),
+                    accent = accent,
+                    modifier = Modifier.weight(1f),
+                )
+                AodTelemetryCompactCard(
+                    icon = Icons.Rounded.ElectricBolt,
+                    label = if (state.effectiveDualCellActive) "VOLT 2S" else "VOLTAGE",
+                    value = String.format(Locale.US, "%.2f V", state.effectiveVoltageMv / 1000f),
+                    accent = accent,
+                    modifier = Modifier.weight(1f),
+                )
+                AodTelemetryCompactCard(
+                    icon = Icons.Rounded.Schedule,
+                    label = "ESTIMATE",
+                    value = state.estimatedTimeShort,
+                    accent = accent,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
 
-        // Subtle interactive bottom bar + double-tap exit prompt
-        AnimatedVisibility(
-            visible = showControlsHint,
-            enter = fadeIn(tween(260)),
-            exit = fadeOut(tween(500)),
+        // Fixed Bottom Quick Actions (Flashlight & Camera) + Subtle Style/Accent Chips
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(bottom = 26.dp),
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+            AnimatedVisibility(
+                visible = showStyleControls,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(450)),
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Surface(
@@ -284,8 +390,8 @@ private fun ChargingAodScreen(
                             PowerTelemetryEngine.updateSettings { it.copy(aodStyle = next) }
                         },
                         shape = CircleShape,
-                        color = Color(0xFF10151D),
-                        border = BorderStroke(1.dp, Color(0xFF283244)),
+                        color = Color(0xFF0E131B),
+                        border = BorderStroke(1.dp, Color(0xFF232E3F)),
                         modifier = Modifier.testTag("aod_cycle_style_button"),
                     ) {
                         Row(
@@ -303,6 +409,8 @@ private fun ChargingAodScreen(
                                 text = settings.aodStyle.title,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = Color(0xFFD6E0EC),
+                                maxLines = 1,
+                                softWrap = false,
                             )
                         }
                     }
@@ -314,8 +422,8 @@ private fun ChargingAodScreen(
                             PowerTelemetryEngine.updateSettings { it.copy(aodAccent = next) }
                         },
                         shape = CircleShape,
-                        color = Color(0xFF10151D),
-                        border = BorderStroke(1.dp, Color(0xFF283244)),
+                        color = Color(0xFF0E131B),
+                        border = BorderStroke(1.dp, Color(0xFF232E3F)),
                         modifier = Modifier.testTag("aod_cycle_accent_button"),
                     ) {
                         Row(
@@ -333,113 +441,170 @@ private fun ChargingAodScreen(
                                 text = settings.aodAccent.label,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = Color(0xFFD6E0EC),
+                                maxLines = 1,
+                                softWrap = false,
                             )
                         }
                     }
                 }
+            }
+
+            // Bottom Lockscreen-Style Quick Action Row: Flashlight | Exit Hint | Camera
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 420.dp)
+                    .fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Surface(
+                    onClick = { flashlightOn = onToggleFlashlight(!flashlightOn) },
+                    shape = CircleShape,
+                    color = if (flashlightOn) accent.copy(alpha = 0.22f) else Color(0xFF0E131B),
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (flashlightOn) accent else Color(0xFF222C3B),
+                    ),
+                    modifier = Modifier
+                        .size(50.dp)
+                        .testTag("aod_flashlight_button"),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = if (flashlightOn) Icons.Rounded.FlashlightOn else Icons.Rounded.FlashlightOff,
+                            contentDescription = "Toggle Flashlight",
+                            tint = if (flashlightOn) accent else Color(0xFFA8B5C6),
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
 
                 Text(
-                    text = "OLED SHIFT ACTIVE • DOUBLE-TAP ANYWHERE TO EXIT",
+                    text = "DOUBLE-TAP TO EXIT",
                     style = MonoLabelStyle,
-                    color = Color(0xFF6B7788),
+                    color = Color(0xFF5D6A7B),
+                    maxLines = 1,
+                    softWrap = false,
                 )
+
+                Surface(
+                    onClick = onLaunchCamera,
+                    shape = CircleShape,
+                    color = Color(0xFF0E131B),
+                    border = BorderStroke(1.dp, Color(0xFF222C3B)),
+                    modifier = Modifier
+                        .size(50.dp)
+                        .testTag("aod_camera_button"),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.CameraAlt,
+                            contentDescription = "Open Camera",
+                            tint = Color(0xFFA8B5C6),
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun AodSpeedometerRing(
+private fun AodSegmentedRingGauge(
     state: PowerTelemetryState,
     accent: Color,
 ) {
-    val levelSweep by animateFloatAsState(
-        targetValue = (state.levelPercent / 100f).coerceIn(0.02f, 1f) * 260f,
-        animationSpec = spring(stiffness = Spring.StiffnessLow),
-        label = "aod_ring_sweep",
+    val animatedProgress by animateFloatAsState(
+        targetValue = (state.exactLevelPercent / 100f).coerceIn(0.01f, 1f),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessLow,
+        ),
+        label = "aod_segmented_progress",
     )
 
+    val formattedExact = String.format(Locale.US, "%.2f", state.exactLevelPercent)
+    val integerPart = formattedExact.substringBefore(".")
+    val decimalPart = "." + formattedExact.substringAfter(".")
+
     Box(
-        modifier = Modifier.size(240.dp),
+        modifier = Modifier.size(236.dp),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val strokePx = 10.dp.toPx()
-            val inset = 18.dp.toPx()
-            val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
-            val topLeft = Offset(inset, inset)
-
-            // Outer precision speedometer tick marks
             val center = Offset(size.width / 2f, size.height / 2f)
-            val outerRadius = size.minDimension / 2f - 4.dp.toPx()
-            val tickCount = 36
-            for (i in 0..tickCount) {
-                val angleDeg = 140f + (260f * i / tickCount)
+            val outerRadius = size.minDimension / 2f - 6.dp.toPx()
+            val innerRadius = outerRadius - 17.dp.toPx()
+            val segmentCount = 60
+            val activeSegments = (animatedProgress * segmentCount).toInt().coerceIn(0, segmentCount)
+
+            for (i in 0 until segmentCount) {
+                val angleDeg = -90f + (360f * i / segmentCount)
                 val rad = angleDeg * PI / 180.0
-                val isMajor = i % 6 == 0
-                val tickLen = if (isMajor) 9.dp.toPx() else 4.5.dp.toPx()
+                val isFilled = i < activeSegments
+                val isLeadingEdge = i == (activeSegments - 1).coerceAtLeast(0) && activeSegments > 0
+
                 val start = Offset(
-                    center.x + ((outerRadius - tickLen) * cos(rad)).toFloat(),
-                    center.y + ((outerRadius - tickLen) * sin(rad)).toFloat(),
+                    center.x + (innerRadius * cos(rad)).toFloat(),
+                    center.y + (innerRadius * sin(rad)).toFloat(),
                 )
                 val end = Offset(
                     center.x + (outerRadius * cos(rad)).toFloat(),
                     center.y + (outerRadius * sin(rad)).toFloat(),
                 )
-                val filled = (260f * i / tickCount) <= levelSweep
+
+                val segColor = when {
+                    isLeadingEdge -> Color.White
+                    isFilled -> accent.copy(alpha = 0.45f + 0.55f * (i.toFloat() / segmentCount.coerceAtLeast(1)))
+                    else -> Color(0xFF17202D)
+                }
+
                 drawLine(
-                    color = if (filled) accent.copy(alpha = 0.85f) else Color(0xFF1F2836),
+                    color = segColor,
                     start = start,
                     end = end,
-                    strokeWidth = if (isMajor) 2.2.dp.toPx() else 1.2.dp.toPx(),
+                    strokeWidth = if (isLeadingEdge) 4.dp.toPx() else 3.2.dp.toPx(),
                     cap = StrokeCap.Round,
                 )
             }
 
-            // Background arc track
-            drawArc(
-                color = Color(0xFF151C26),
-                startAngle = 140f,
-                sweepAngle = 260f,
-                useCenter = false,
-                topLeft = topLeft,
-                size = arcSize,
-                style = Stroke(width = strokePx, cap = StrokeCap.Round),
-            )
-
-            // Active glowing charge arc
-            drawArc(
-                brush = Brush.sweepGradient(
-                    colors = listOf(accent.copy(alpha = 0.55f), accent, Color.White.copy(alpha = 0.9f)),
-                    center = center,
-                ),
-                startAngle = 140f,
-                sweepAngle = levelSweep,
-                useCenter = false,
-                topLeft = topLeft,
-                size = arcSize,
-                style = Stroke(width = strokePx, cap = StrokeCap.Round),
+            // Inner hairline ring
+            drawCircle(
+                color = Color(0xFF141C27),
+                radius = innerRadius - 8.dp.toPx(),
+                center = center,
+                style = Stroke(width = 1.dp.toPx()),
             )
         }
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = integerPart,
+                    fontFamily = SpaceGroteskFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 48.sp,
+                    letterSpacing = (-1.5).sp,
+                    color = Color.White,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+                Text(
+                    text = "$decimalPart%",
+                    style = MonoMetricStyle.copy(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
+                    color = accent,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
             Text(
-                text = "${state.levelPercent}%",
-                fontFamily = SpaceGroteskFontFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 46.sp,
-                color = Color.White,
-            )
-            Text(
-                text = String.format(Locale.US, "%.1f W", state.wattage),
-                style = MonoMetricStyle.copy(fontSize = 20.sp),
-                color = accent,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = state.statusLabel.uppercase(Locale.US),
+                text = "${state.statusLabel.uppercase(Locale.US)} • ${state.pluggedLabel.uppercase(Locale.US)}",
                 style = MonoLabelStyle,
-                color = Color(0xFF7D8B9E),
+                color = Color(0xFF7D8C9F),
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }
@@ -470,7 +635,7 @@ private fun AodEnergyWaveRing(
             val center = Offset(size.width / 2f, size.height / 2f)
             val circlePath = Path().apply {
                 addOval(
-                    androidx.compose.ui.geometry.Rect(
+                    Rect(
                         left = center.x - radius,
                         top = center.y - radius,
                         right = center.x + radius,
@@ -480,11 +645,10 @@ private fun AodEnergyWaveRing(
             }
 
             clipPath(circlePath) {
-                val fillFraction = (state.levelPercent / 100f).coerceIn(0.08f, 0.96f)
+                val fillFraction = (state.exactLevelPercent / 100f).coerceIn(0.08f, 0.96f)
                 val baseY = center.y + radius - (radius * 2f * fillFraction)
-                val amplitude = 9.dp.toPx()
+                val amplitude = 8.dp.toPx()
 
-                // Secondary subtle wave behind
                 val backWave = Path().apply {
                     moveTo(0f, size.height)
                     var x = 0f
@@ -498,7 +662,6 @@ private fun AodEnergyWaveRing(
                 }
                 drawPath(path = backWave, color = accent.copy(alpha = 0.16f))
 
-                // Primary energy wave
                 val frontWave = Path().apply {
                     moveTo(0f, size.height)
                     var x = 0f
@@ -520,7 +683,6 @@ private fun AodEnergyWaveRing(
                 )
             }
 
-            // Crisp outer capsule border
             drawCircle(
                 color = accent.copy(alpha = 0.55f),
                 radius = radius,
@@ -531,21 +693,20 @@ private fun AodEnergyWaveRing(
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = "${state.levelPercent}%",
+                text = String.format(Locale.US, "%.2f%%", state.exactLevelPercent),
                 fontFamily = SpaceGroteskFontFamily,
                 fontWeight = FontWeight.Bold,
-                fontSize = 48.sp,
+                fontSize = 40.sp,
                 color = Color.White,
-            )
-            Text(
-                text = String.format(Locale.US, "%.1f W", state.wattage),
-                style = MonoMetricStyle.copy(fontSize = 19.sp),
-                color = accent,
+                maxLines = 1,
+                softWrap = false,
             )
             Text(
                 text = state.pluggedLabel.uppercase(Locale.US),
                 style = MonoLabelStyle,
                 color = Color(0xFF9FB0C4),
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }
@@ -562,57 +723,70 @@ private fun AodMinimalDigitalCluster(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "${state.levelPercent}%",
+            text = String.format(Locale.US, "%.2f%%", state.exactLevelPercent),
             fontFamily = SpaceGroteskFontFamily,
             fontWeight = FontWeight.Bold,
-            fontSize = 72.sp,
+            fontSize = 58.sp,
             letterSpacing = (-2).sp,
             color = accent,
-        )
-        Text(
-            text = String.format(
-                Locale.US,
-                "%.1f W  •  %.2f V",
-                state.wattage,
-                state.effectiveVoltageMv / 1000f,
-            ),
-            style = MonoMetricStyle.copy(fontSize = 17.sp),
-            color = Color(0xFFD6E0EC),
+            maxLines = 1,
+            softWrap = false,
         )
         Text(
             text = "${state.statusLabel.uppercase(Locale.US)} • ${state.pluggedLabel.uppercase(Locale.US)}",
             style = MonoLabelStyle,
             color = Color(0xFF6E7B8C),
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
 
 @Composable
-private fun AodMiniMetricBadge(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    text: String,
+private fun AodTelemetryCompactCard(
+    icon: ImageVector,
+    label: String,
+    value: String,
     accent: Color,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
-        shape = CircleShape,
-        color = Color(0xFF0C1118),
-        border = BorderStroke(1.dp, Color(0xFF1F2937)),
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        color = Color(0xFF0A0E14),
+        border = BorderStroke(1.dp, Color(0xFF1A2230)),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 11.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = accent,
-                modifier = Modifier.size(15.dp),
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(13.dp),
+                )
+                Text(
+                    text = label,
+                    style = MonoLabelStyle.copy(fontSize = 10.sp),
+                    color = Color(0xFF7B899C),
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
             Text(
-                text = text,
-                style = MonoLabelStyle.copy(fontSize = 12.sp),
-                color = Color(0xFFDCE5F0),
+                text = value,
+                style = MonoMetricStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.Bold),
+                color = Color(0xFFE6EEF7),
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }

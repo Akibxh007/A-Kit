@@ -1,8 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/ic_akit_emblem_1795442183043"
-        android:gravity="center" />
-</layer-list>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Left Wing of Geometric 'A' with Lightning Cutout (Vibrant Electric Cyan) -->
+    <path android:pathData="M48,29 L60,29 L45.5,56.5 L52.5,56.5 L50,67.5 L42,67.5 L37,79 L26,79 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="28"
+                android:startY="29"
+                android:endX="58"
+                android:endY="79"
+                android:type="linear">
+                <item android:color="#FF00E5FF" android:offset="0.0" />
+                <item android:color="#FF00D4EC" android:offset="0.65" />
+                <item android:color="#FF00B8D4" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Right Wing of Geometric 'A' with Lightning Cutout (Cyan-to-Teal Gradient) -->
+    <path android:pathData="M60,29 L82,79 L71,79 L66,67.5 L52,67.5 L62.5,50.5 L55.5,50.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="58"
+                android:startY="29"
+                android:endX="80"
+                android:endY="79"
+                android:type="linear">
+                <item android:color="#FF00D2D9" android:offset="0.0" />
+                <item android:color="#FF00A89E" android:offset="0.55" />
+                <item android:color="#FF00897B" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

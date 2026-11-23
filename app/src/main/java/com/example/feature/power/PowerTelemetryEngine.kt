@@ -12,6 +12,7 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,8 +28,13 @@ import kotlin.math.roundToInt
 /**
  * Shared local hardware telemetry engine used by PowerViewModel, ChargingAodActivity,
  * and PowerMonitorService so every UI surface and overlay reads identical live data.
+ *
+ * Battery-optimized: hardware polling runs at 1500ms ONLY while the Power screen is visible,
+ * Charging AOD is active, or the Floating HUD / Protection Guard service is running.
  */
 object PowerTelemetryEngine {
+
+    private const val POLLING_INTERVAL_MS = 1_500L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -41,7 +47,28 @@ object PowerTelemetryEngine {
     private var preferencesStore: PowerPreferencesStore? = null
     private var batteryManager: BatteryManager? = null
 
+    @Volatile
+    private var isPowerScreenVisible = false
+
+    @Volatile
+    private var isAodVisible = false
+
+    @Volatile
+    private var isServiceActive = false
+
+    @Volatile
+    private var autoLaunchAodEnabled = false
+
+    private var pollingJob: Job? = null
     private var lastIntent: Intent? = null
+    private var lastBroadcastWasCharging: Boolean? = null
+
+    // Live decimal battery percentage coulomb-counter interpolation state
+    private var lastOsLevelPercent: Int = -1
+    private var smoothExactPercent: Float = 0f
+    private var lastIntegrationMs: Long = 0L
+
+    // Active charging session analytics
     private var activeSessionStartMs: Long = 0L
     private var activeSessionStartPercent: Int = 0
     private var activeSessionMaxTempC: Float = 0f
@@ -53,8 +80,27 @@ object PowerTelemetryEngine {
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_BATTERY_CHANGED) {
+                val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+                val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+                val nowCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL ||
+                    plugged != 0
+
+                val prevCharging = lastBroadcastWasCharging
+                lastBroadcastWasCharging = nowCharging
                 lastIntent = intent
                 processReading(intent, recordSample = true)
+
+                // Auto-launch Charging AOD on fresh plug-in if enabled in Settings
+                if (prevCharging == false && nowCharging && autoLaunchAodEnabled && !isAodVisible) {
+                    val ctx = appContext
+                    if (ctx != null) {
+                        val aodIntent = Intent(ctx, ChargingAodActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        }
+                        runCatching { ctx.startActivity(aodIntent) }
+                    }
+                }
             }
         }
     }
@@ -103,20 +149,74 @@ object PowerTelemetryEngine {
         val sticky = app.registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         if (sticky != null) {
             lastIntent = sticky
+            val plugged = sticky.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+            val status = sticky.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+            lastBroadcastWasCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL ||
+                plugged != 0
             processReading(sticky, recordSample = true)
         }
         refreshPermissions()
+        updatePollingState()
+    }
 
-        // Smooth 2-second hardware polling loop for live wattage & thermal curves
-        scope.launch {
-            while (isActive) {
-                delay(2_000L)
-                val currentIntent = lastIntent
-                    ?: app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                if (currentIntent != null) {
-                    lastIntent = currentIntent
-                    processReading(currentIntent, recordSample = true)
+    fun setPowerScreenVisible(visible: Boolean) {
+        isPowerScreenVisible = visible
+        if (visible) {
+            pollOnceImmediately()
+        }
+        updatePollingState()
+    }
+
+    fun setAodVisible(visible: Boolean) {
+        isAodVisible = visible
+        if (visible) {
+            pollOnceImmediately()
+        }
+        updatePollingState()
+    }
+
+    fun setServiceRunning(running: Boolean) {
+        isServiceActive = running
+        _state.update { it.copy(isGuardServiceRunning = running) }
+        updatePollingState()
+    }
+
+    fun setAutoLaunchAodOnPlugIn(enabled: Boolean) {
+        autoLaunchAodEnabled = enabled
+    }
+
+    @Synchronized
+    private fun updatePollingState() {
+        val shouldPoll = initialized && (isPowerScreenVisible || isAodVisible || isServiceActive)
+        if (shouldPoll) {
+            if (pollingJob?.isActive == true) return
+            pollingJob = scope.launch {
+                while (isActive) {
+                    delay(POLLING_INTERVAL_MS)
+                    val ctx = appContext ?: continue
+                    val currentIntent = lastIntent
+                        ?: ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                    if (currentIntent != null) {
+                        lastIntent = currentIntent
+                        processReading(currentIntent, recordSample = true)
+                    }
                 }
+            }
+        } else {
+            pollingJob?.cancel()
+            pollingJob = null
+        }
+    }
+
+    private fun pollOnceImmediately() {
+        val ctx = appContext ?: return
+        scope.launch {
+            val currentIntent = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                ?: lastIntent
+            if (currentIntent != null) {
+                lastIntent = currentIntent
+                processReading(currentIntent, recordSample = false)
             }
         }
     }
@@ -143,10 +243,6 @@ object PowerTelemetryEngine {
                 notificationPermissionGranted = notifGranted,
             )
         }
-    }
-
-    fun setServiceRunning(running: Boolean) {
-        _state.update { it.copy(isGuardServiceRunning = running) }
     }
 
     fun setActiveAlert(message: String?) {
@@ -186,7 +282,7 @@ object PowerTelemetryEngine {
             peakWatts = peakW,
             avgWatts = avgW,
             maxTempCelsius = maxTemp,
-            isDualCell = snapshot.settings.dualCellMode,
+            isDualCell = snapshot.effectiveDualCellActive,
         )
         scope.launch {
             store.saveSession(record)
@@ -221,8 +317,13 @@ object PowerTelemetryEngine {
         val tempTenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
         val tempC = tempTenths / 10f
 
-        val rawVoltageMv = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
-        val normalizedVoltageMv = if (rawVoltageMv in 1..20) rawVoltageMv * 1000 else rawVoltageMv
+        val rawVoltageExtra = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
+        val normalizedVoltageMv = when {
+            rawVoltageExtra in 1..20 -> rawVoltageExtra * 1000
+            rawVoltageExtra > 100_000 -> rawVoltageExtra / 1000 // microvolts on rare kernels
+            else -> rawVoltageExtra
+        }
+
         val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
         val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
         val health = intent.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN)
@@ -257,40 +358,84 @@ object PowerTelemetryEngine {
             else -> "Normal"
         }
 
-        // Read hardware current (normalize microamps vs milliamps across OEMs)
+        // Read hardware current with floating-point precision (normalize µA vs mA across OEMs)
         val bm = batteryManager
-        val rawCurrent = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
-            ?.takeIf { it != Int.MIN_VALUE }
-            ?: bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE)
-                ?.takeIf { it != Int.MIN_VALUE }
-            ?: 0
+        val rawCurrentNow = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+            ?.takeIf { it != Int.MIN_VALUE && it != 0 }
+        val rawCurrentAvg = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE)
+            ?.takeIf { it != Int.MIN_VALUE && it != 0 }
+        val rawCurrent = rawCurrentNow ?: rawCurrentAvg ?: 0
 
-        val absMa = when {
-            abs(rawCurrent) >= 10_000 -> abs(rawCurrent) / 1000
-            else -> abs(rawCurrent)
+        val absMaFloat = when {
+            abs(rawCurrent) >= 10_000 -> abs(rawCurrent) / 1000f
+            else -> abs(rawCurrent).toFloat()
         }
-        val signedMa = if (isCharging) absMa else -absMa
+        val absMaInt = absMaFloat.roundToInt()
+        val signedMa = if (isCharging) absMaInt else -absMaInt
 
         val currentSettings = _state.value.settings
-        val cellMultiplier = if (currentSettings.dualCellMode) 2 else 1
-        val effectiveVoltageMv = normalizedVoltageMv * cellMultiplier
-        val watts = (effectiveVoltageMv / 1000f) * (absMa / 1000f)
+        val designMah = currentSettings.designCapacityMah.coerceAtLeast(1000)
 
-        // Estimated full capacity from hardware Charge Counter (µAh)
+        // Read hardware Charge Counter (µAh) for capacity health & 2S auto-detection
         val chargeCounterUah = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
             ?.takeIf { it != Int.MIN_VALUE && it > 0 }
-        val estimatedMah = if (chargeCounterUah != null && percent >= 5) {
+
+        val rawEstimatedFullMah = if (chargeCounterUah != null && percent >= 5) {
             val currentChargeMah = chargeCounterUah / 1000.0
-            val estimatedFull = (currentChargeMah / (percent / 100.0)).roundToInt()
-            estimatedFull.takeIf { it in 1000..15000 }
+            (currentChargeMah / (percent / 100.0)).roundToInt().takeIf { it in 800..16000 }
         } else {
             null
         }
 
-        val designMah = currentSettings.designCapacityMah.coerceAtLeast(1000)
+        // Smart Dual-Cell (2S) detection:
+        // Many 2S fast-charging phones (Xiaomi/OnePlus/Realme/Vivo) report single-cell voltage (~4.3V)
+        // and half the charge counter (~2500mAh for a 5000mAh pack), halving naive V*I wattage (~9.1W vs ~18.8W).
+        // Never double if the kernel already reports series pack voltage (> 5800mV).
+        val kernelReportsSingleCellVoltage = normalizedVoltageMv in 3000..5400
+        val autoDualCellDetected = kernelReportsSingleCellVoltage &&
+            rawEstimatedFullMah != null &&
+            rawEstimatedFullMah < (designMah * 0.62f).roundToInt()
+
+        val effectiveDualCell = (currentSettings.dualCellMode || autoDualCellDetected) &&
+            kernelReportsSingleCellVoltage
+
+        val cellMultiplier = if (effectiveDualCell) 2 else 1
+        val effectiveVoltageMv = normalizedVoltageMv * cellMultiplier
+
+        // Accurate real-time wattage: Effective Pack Voltage (V) * Current (A)
+        val watts = (effectiveVoltageMv / 1000f) * (absMaFloat / 1000f)
+
+        val estimatedMah = when {
+            rawEstimatedFullMah == null -> null
+            effectiveDualCell && rawEstimatedFullMah < (designMah * 0.62f).roundToInt() ->
+                (rawEstimatedFullMah * 2).coerceIn(1000, 16000)
+            else -> rawEstimatedFullMah.coerceIn(1000, 16000)
+        }
+        val effectiveFullMah = (estimatedMah ?: designMah).toFloat().coerceAtLeast(1500f)
         val healthPct = estimatedMah?.let { ((it * 100f) / designMah).roundToInt().coerceIn(40, 105) }
 
         val now = System.currentTimeMillis()
+
+        // Smooth live decimal battery percentage via charge-counter + coulomb interpolation
+        val exactPercent = computeSmoothDecimalPercent(
+            osPercent = percent,
+            isCharging = isCharging,
+            absMaFloat = absMaFloat,
+            chargeCounterUah = chargeCounterUah,
+            effectiveFullMah = effectiveFullMah,
+            effectiveDualCell = effectiveDualCell,
+            nowMs = now,
+        )
+
+        // Live Estimated Time Remaining (API 28+ computeChargeTimeRemaining with accurate coulomb fallback)
+        val (estimateLong, estimateShort) = computeTimeEstimate(
+            bm = bm,
+            osPercent = percent,
+            exactPercent = exactPercent,
+            isCharging = isCharging,
+            absMaFloat = absMaFloat,
+            effectiveFullMah = effectiveFullMah,
+        )
 
         // Track automatic session start/end transitions
         if (recordSample) {
@@ -361,6 +506,7 @@ object PowerTelemetryEngine {
 
             prev.copy(
                 levelPercent = percent,
+                exactLevelPercent = exactPercent,
                 temperatureCelsius = tempC,
                 rawVoltageMv = normalizedVoltageMv,
                 effectiveVoltageMv = effectiveVoltageMv,
@@ -368,8 +514,12 @@ object PowerTelemetryEngine {
                 wattage = watts,
                 peakSessionWatts = max(prev.peakSessionWatts, watts),
                 isCharging = isCharging,
+                isAutoDualCellDetected = autoDualCellDetected,
+                effectiveDualCellActive = effectiveDualCell,
                 statusLabel = statusLabel,
                 pluggedLabel = pluggedLabel,
+                estimatedTimeLabel = estimateLong,
+                estimatedTimeShort = estimateShort,
                 healthLabel = healthLabel,
                 technology = tech,
                 estimatedCapacityMah = estimatedMah,
@@ -378,6 +528,140 @@ object PowerTelemetryEngine {
                 sessionSamples = newSamples,
                 bracketStats = updatedBrackets,
             )
+        }
+    }
+
+    private fun computeSmoothDecimalPercent(
+        osPercent: Int,
+        isCharging: Boolean,
+        absMaFloat: Float,
+        chargeCounterUah: Int?,
+        effectiveFullMah: Float,
+        effectiveDualCell: Boolean,
+        nowMs: Long,
+    ): Float {
+        if (osPercent >= 100 && isCharging) {
+            lastOsLevelPercent = 100
+            smoothExactPercent = 100.00f
+            lastIntegrationMs = nowMs
+            return 100.00f
+        }
+        if (osPercent <= 0) {
+            lastOsLevelPercent = 0
+            smoothExactPercent = 0.00f
+            lastIntegrationMs = nowMs
+            return 0.00f
+        }
+
+        // First reading or OS integer level changed -> anchor cleanly to the new integer boundary
+        if (lastOsLevelPercent == -1 || lastIntegrationMs == 0L) {
+            val initialFrac = estimateFractionalOffsetFromCoulomb(
+                osPercent = osPercent,
+                chargeCounterUah = chargeCounterUah,
+                effectiveFullMah = effectiveFullMah,
+                effectiveDualCell = effectiveDualCell,
+            )
+            lastOsLevelPercent = osPercent
+            smoothExactPercent = (osPercent + initialFrac).coerceIn(0f, 99.99f)
+            lastIntegrationMs = nowMs
+            return smoothExactPercent
+        }
+
+        if (osPercent != lastOsLevelPercent) {
+            val steppedUp = osPercent > lastOsLevelPercent
+            lastOsLevelPercent = osPercent
+            smoothExactPercent = if (steppedUp) {
+                osPercent.toFloat() + 0.01f
+            } else {
+                (osPercent.toFloat() + 0.96f).coerceAtMost(99.99f)
+            }
+            lastIntegrationMs = nowMs
+            return smoothExactPercent
+        }
+
+        val dtMs = (nowMs - lastIntegrationMs).coerceIn(0L, 15_000L)
+        lastIntegrationMs = nowMs
+        if (dtMs <= 0L) return smoothExactPercent
+
+        // Integrate live current (mA * hours / full_mAh * 100%) so decimal smoothly progresses
+        val dtHours = dtMs / 3_600_000f
+        val effectiveCurrentMa = if (absMaFloat > 20f) absMaFloat else if (isCharging) 350f else 180f
+        val deltaPct = (effectiveCurrentMa * dtHours / effectiveFullMah) * 100f
+
+        val lowerBound = osPercent.toFloat()
+        val upperBound = (osPercent + 0.99f).coerceAtMost(99.99f)
+
+        smoothExactPercent = if (isCharging) {
+            (smoothExactPercent + deltaPct).coerceIn(lowerBound, upperBound)
+        } else {
+            (smoothExactPercent - deltaPct).coerceIn(lowerBound, upperBound)
+        }
+        return smoothExactPercent
+    }
+
+    private fun estimateFractionalOffsetFromCoulomb(
+        osPercent: Int,
+        chargeCounterUah: Int?,
+        effectiveFullMah: Float,
+        effectiveDualCell: Boolean,
+    ): Float {
+        if (chargeCounterUah == null || effectiveFullMah <= 0f) return 0.42f
+        val rawMah = chargeCounterUah / 1000f
+        val adjustedMah = if (effectiveDualCell && rawMah < effectiveFullMah * 0.62f) rawMah * 2f else rawMah
+        val rawPct = (adjustedMah / effectiveFullMah) * 100f
+        val diff = rawPct - osPercent
+        return if (diff in 0.0f..0.99f) diff else 0.35f
+    }
+
+    private fun computeTimeEstimate(
+        bm: BatteryManager?,
+        osPercent: Int,
+        exactPercent: Float,
+        isCharging: Boolean,
+        absMaFloat: Float,
+        effectiveFullMah: Float,
+    ): Pair<String, String> {
+        if (isCharging) {
+            if (osPercent >= 100) return "Fully Charged" to "Full"
+
+            // Prefer Android OS charge time estimator on API 28+ when available
+            val osMillis = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                runCatching { bm?.computeChargeTimeRemaining() ?: -1L }.getOrDefault(-1L)
+            } else {
+                -1L
+            }
+
+            val totalMinutes = if (osMillis > 60_000L) {
+                (osMillis / 60_000L).toInt().coerceIn(1, 999)
+            } else {
+                val remainingMah = effectiveFullMah * ((100f - exactPercent).coerceAtLeast(0.5f) / 100f)
+                val effectiveMa = absMaFloat.coerceAtLeast(180f)
+                // Account for lithium-ion constant-voltage taper above 80%
+                val taperFactor = if (osPercent >= 80) 1.18f else 1.05f
+                ((remainingMah / effectiveMa) * 60f * taperFactor).roundToInt().coerceIn(1, 999)
+            }
+
+            val hours = totalMinutes / 60
+            val mins = totalMinutes % 60
+            val shortStr = when {
+                hours > 0 && mins > 0 -> "${hours}h ${mins}m"
+                hours > 0 -> "${hours}h"
+                else -> "$mins min"
+            }
+            return "$shortStr Estimate" to shortStr
+        } else {
+            val remainingMah = effectiveFullMah * (exactPercent.coerceAtLeast(1f) / 100f)
+            val drawMa = absMaFloat.coerceAtLeast(160f)
+            val totalMinutes = ((remainingMah / drawMa) * 60f).roundToInt().coerceIn(5, 72 * 60)
+            val hours = totalMinutes / 60
+            val mins = totalMinutes % 60
+            val shortStr = when {
+                hours >= 24 -> "${hours}h"
+                hours > 0 && mins > 0 -> "${hours}h ${mins}m"
+                hours > 0 -> "${hours}h"
+                else -> "${mins}m"
+            }
+            return "$shortStr Remaining" to shortStr
         }
     }
 }

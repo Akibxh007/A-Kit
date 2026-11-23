@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
@@ -97,6 +98,22 @@ class DropServerService : Service() {
             val ip = LocalNetworkUtils.detectLocalIpv4Address()
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             nm?.notify(NOTIFICATION_ID, buildNotification(ip, boundPort, 0))
+
+            // 15-minute idle auto-shutdown watchdog to protect battery life
+            serviceScope.launch {
+                while (isActive && !socket.isClosed) {
+                    delay(IDLE_CHECK_INTERVAL_MS)
+                    val idleElapsed = System.currentTimeMillis() - DropHubCoordinator.lastActivityMs
+                    if (idleElapsed >= IDLE_TIMEOUT_MS) {
+                        DropHubCoordinator.notifyIdleShutdown(
+                            "Local Drop Server auto-stopped after 15 minutes of inactivity to save battery.",
+                        )
+                        runCatching { socket.close() }
+                        stopSelf()
+                        break
+                    }
+                }
+            }
 
             while (isActive && !socket.isClosed) {
                 val client = runCatching { socket.accept() }.getOrNull() ?: break
@@ -405,6 +422,8 @@ class DropServerService : Service() {
         private const val NOTIFICATION_ID = 6301
         private const val DEFAULT_PORT = 8080
         private const val MAX_UPLOAD_BYTES = 150L * 1024L * 1024L
+        private const val IDLE_TIMEOUT_MS = 15L * 60_000L
+        private const val IDLE_CHECK_INTERVAL_MS = 30_000L
 
         private const val ACTION_START = "com.example.feature.drop.START_SERVER"
         private const val ACTION_STOP = "com.example.feature.drop.STOP_SERVER"

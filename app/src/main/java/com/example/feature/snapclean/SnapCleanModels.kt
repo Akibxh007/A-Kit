@@ -1,6 +1,7 @@
 package com.example.feature.snapclean
 
 import android.net.Uri
+import androidx.compose.runtime.Immutable
 import java.util.Locale
 import kotlin.math.max
 
@@ -31,6 +32,7 @@ enum class ScreenshotStatus(val key: String) {
     }
 }
 
+@Immutable
 data class TrackedScreenshot(
     val id: String,
     val uriString: String,
@@ -68,6 +70,7 @@ data class TrackedScreenshot(
     }
 }
 
+@Immutable
 data class SnapCleanSettings(
     val autoWatchEnabled: Boolean = false,
     val defaultRetentionHours: Int = RetentionPolicyOption.THREE_DAYS.hours,
@@ -94,6 +97,7 @@ sealed interface DeleteOutcome {
     data class Failed(val reason: String) : DeleteOutcome
 }
 
+@Immutable
 data class SnapCleanUiState(
     val settings: SnapCleanSettings = SnapCleanSettings(),
     val mediaPermissionGranted: Boolean = false,

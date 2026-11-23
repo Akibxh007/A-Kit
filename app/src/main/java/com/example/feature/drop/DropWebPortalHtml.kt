@@ -113,7 +113,10 @@ object DropWebPortalHtml {
       <h1>A-Kit Local Drop</h1>
       <p>Connected to $safeName • 100% Offline LAN</p>
     </div>
-    <div class="pill"><span class="dot"></span>LOCAL P2P</div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+      <a id="openInAppBtn" class="btn-link btn-secondary" style="padding:7px 12px;font-size:11px;border-radius:999px;" href="#">Open in A-Kit App</a>
+      <div class="pill"><span class="dot"></span>LOCAL P2P</div>
+    </div>
   </header>
 
   <section class="card">
@@ -167,6 +170,10 @@ object DropWebPortalHtml {
   const progressFill = document.getElementById('progressFill');
   const progressLabel = document.getElementById('progressLabel');
   const toastEl = document.getElementById('toast');
+  const openInAppBtn = document.getElementById('openInAppBtn');
+  if (openInAppBtn) {
+    openInAppBtn.href = 'akit://drop?url=' + encodeURIComponent(window.location.origin);
+  }
 
   function showToast(msg) {
     toastEl.textContent = msg;

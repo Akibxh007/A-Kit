@@ -229,6 +229,9 @@ fun SnapCleanScreen(
                                         text = "Auto-Watch Screenshots",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                         color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
                                     )
                                     Surface(
                                         shape = CircleShape,
@@ -246,7 +249,9 @@ fun SnapCleanScreen(
                                             } else {
                                                 MaterialTheme.colorScheme.onSurfaceVariant
                                             },
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
                                         )
                                     }
                                 }
@@ -277,9 +282,10 @@ fun SnapCleanScreen(
                             Button(
                                 onClick = viewModel::triggerTestDetection,
                                 shape = RoundedCornerShape(14.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                                 modifier = Modifier
-                                    .weight(1.35f)
-                                    .height(46.dp)
+                                    .weight(1.25f)
+                                    .height(50.dp)
                                     .testTag("snapclean_test_detection_button"),
                             ) {
                                 Icon(
@@ -291,15 +297,18 @@ fun SnapCleanScreen(
                                 Text(
                                     text = "Test Detection",
                                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    softWrap = false,
                                 )
                             }
 
                             FilledTonalButton(
                                 onClick = viewModel::scanExistingScreenshots,
                                 shape = RoundedCornerShape(14.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(46.dp)
+                                    .height(50.dp)
                                     .testTag("snapclean_scan_device_button"),
                             ) {
                                 Icon(
@@ -310,7 +319,9 @@ fun SnapCleanScreen(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "Scan Folder",
-                                    style = MaterialTheme.typography.labelMedium,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    maxLines = 1,
+                                    softWrap = false,
                                 )
                             }
                         }

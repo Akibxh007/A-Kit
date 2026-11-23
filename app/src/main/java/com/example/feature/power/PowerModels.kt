@@ -1,5 +1,6 @@
 package com.example.feature.power
 
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import java.util.Locale
 
@@ -26,9 +27,9 @@ enum class PowerAccentPreset(
     val composeColor: Color,
     val argbInt: Int,
 ) {
-    CYAN("cyan", "Cyan", Color(0xFF5CE1E6), 0xFF5CE1E6.toInt()),
-    MINT("mint", "Mint", Color(0xFF4ADE80), 0xFF4ADE80.toInt()),
-    AMBER("amber", "Amber", Color(0xFFFBBF24), 0xFFFBBF24.toInt()),
+    CYAN("cyan", "Cyan", Color(0xFF00E5FF), 0xFF00E5FF.toInt()),
+    MINT("mint", "Mint", Color(0xFF00E676), 0xFF00E676.toInt()),
+    AMBER("amber", "Amber", Color(0xFFFFCA28), 0xFFFFCA28.toInt()),
     CORAL("coral", "Coral", Color(0xFFFF7A70), 0xFFFF7A70.toInt()),
     WHITE("white", "Pure", Color(0xFFF1F5F9), 0xFFF1F5F9.toInt());
 
@@ -38,7 +39,7 @@ enum class PowerAccentPreset(
 }
 
 enum class AodVisualStyle(val key: String, val title: String, val subtitle: String) {
-    SPEEDOMETER_RING("ring", "Speed Ring", "Radial wattage speedometer arc"),
+    SPEEDOMETER_RING("ring", "Segmented Ring", "60-segment precision wattage arc"),
     PLASMA_WAVE("wave", "Energy Wave", "Animated liquid charge horizon"),
     MINIMAL_DIGITAL("digital", "Ultra Minimal", "Low-pixel OLED mono readout");
 
@@ -48,6 +49,7 @@ enum class AodVisualStyle(val key: String, val title: String, val subtitle: Stri
     }
 }
 
+@Immutable
 data class PowerSettings(
     val tempUnit: TempUnit = TempUnit.CELSIUS,
     val dualCellMode: Boolean = false,
@@ -71,6 +73,7 @@ data class PowerSettings(
         get() = hudEnabled || activeAlarmCount > 0
 }
 
+@Immutable
 data class TelemetrySample(
     val timestampMs: Long,
     val watts: Float,
@@ -79,6 +82,7 @@ data class TelemetrySample(
     val currentMa: Int,
 )
 
+@Immutable
 data class LevelBracketStat(
     val id: String,
     val label: String,
@@ -89,6 +93,7 @@ data class LevelBracketStat(
     val sampleCount: Int,
 )
 
+@Immutable
 data class ChargingSessionRecord(
     val id: String,
     val startedAtMs: Long,
@@ -101,8 +106,10 @@ data class ChargingSessionRecord(
     val isDualCell: Boolean,
 )
 
+@Immutable
 data class PowerTelemetryState(
     val levelPercent: Int = 0,
+    val exactLevelPercent: Float = 0f,
     val temperatureCelsius: Float = 0f,
     val rawVoltageMv: Int = 0,
     val effectiveVoltageMv: Int = 0,
@@ -110,8 +117,12 @@ data class PowerTelemetryState(
     val wattage: Float = 0f,
     val peakSessionWatts: Float = 0f,
     val isCharging: Boolean = false,
+    val isAutoDualCellDetected: Boolean = false,
+    val effectiveDualCellActive: Boolean = false,
     val statusLabel: String = "Reading",
     val pluggedLabel: String = "Battery",
+    val estimatedTimeLabel: String = "Estimating...",
+    val estimatedTimeShort: String = "--",
     val healthLabel: String = "Good",
     val technology: String = "Li-ion",
     val estimatedCapacityMah: Int? = null,

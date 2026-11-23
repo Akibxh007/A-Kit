@@ -49,8 +49,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 fun FloatingPillNavBar(
@@ -65,14 +65,14 @@ fun FloatingPillNavBar(
         modifier = modifier
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
             modifier = Modifier
-                .widthIn(max = 420.dp)
+                .widthIn(max = 440.dp)
                 .fillMaxWidth()
-                .height(68.dp)
+                .height(64.dp)
                 .testTag("floating_nav_bar"),
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f),
@@ -80,20 +80,20 @@ fun FloatingPillNavBar(
             shadowElevation = 10.dp,
             border = BorderStroke(
                 width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f),
             ),
         ) {
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                    .padding(horizontal = 5.dp, vertical = 5.dp),
             ) {
                 val itemWidth = maxWidth / destinations.size
                 val indicatorOffset by animateDpAsState(
                     targetValue = itemWidth * selectedIndex,
                     animationSpec = spring(
-                        dampingRatio = 0.75f,
-                        stiffness = Spring.StiffnessMediumLow,
+                        dampingRatio = 0.80f,
+                        stiffness = Spring.StiffnessMedium,
                     ),
                     label = "floating_nav_indicator_offset",
                 )
@@ -124,7 +124,7 @@ fun FloatingPillNavBar(
                             label = "nav_item_color_${destination.route}",
                         )
                         val iconScale by animateFloatAsState(
-                            targetValue = if (isSelected) 1.08f else 0.95f,
+                            targetValue = if (isSelected) 1.06f else 0.96f,
                             animationSpec = spring(
                                 dampingRatio = Spring.DampingRatioMediumBouncy,
                                 stiffness = Spring.StiffnessMedium,
@@ -152,7 +152,7 @@ fun FloatingPillNavBar(
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.padding(horizontal = 8.dp),
+                                modifier = Modifier.padding(horizontal = 4.dp),
                             ) {
                                 Icon(
                                     imageVector = if (isSelected) {
@@ -163,18 +163,20 @@ fun FloatingPillNavBar(
                                     contentDescription = label,
                                     tint = contentColor,
                                     modifier = Modifier
-                                        .size(21.dp)
+                                        .size(18.dp)
                                         .scale(iconScale),
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
                                 Text(
                                     text = label,
-                                    style = MaterialTheme.typography.labelLarge.copy(
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontSize = 12.sp,
+                                        letterSpacing = 0.sp,
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                     ),
                                     color = contentColor,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                                    softWrap = false,
                                 )
                             }
                         }
@@ -218,6 +220,8 @@ fun AKitNavigationRail(
                         Text(
                             text = label,
                             style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            softWrap = false,
                         )
                     },
                     colors = NavigationRailItemDefaults.colors(

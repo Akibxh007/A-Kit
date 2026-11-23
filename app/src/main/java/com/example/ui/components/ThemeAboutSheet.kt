@@ -1,13 +1,21 @@
 package com.example.ui.components
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,14 +30,23 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Contrast
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LightMode
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.PhotoLibrary
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SettingsBrightness
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,12 +61,15 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -58,81 +78,96 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.BuildConfig
 import com.example.R
 import com.example.data.AppPreferences
 import com.example.data.ThemeMode
+import com.example.ui.navigation.AKitDestination
+import com.example.ui.theme.AmoledBrandBlack
 import com.example.ui.theme.MonoLabelStyle
 
-private enum class PermissionAuditState {
-    GRANTED,
-    PENDING,
-    DECLARED_INSTALL_TIME,
-}
-
-private data class ManifestPermissionEntry(
-    val shortName: String,
-    val moduleOwner: String,
-    val state: PermissionAuditState,
+private data class InteractivePermissionStatus(
+    val notificationsGranted: Boolean,
+    val overlayGranted: Boolean,
+    val mediaGranted: Boolean,
+    val unrestrictedBattery: Boolean,
 )
 
-private fun inspectManifestPermissions(context: Context): List<ManifestPermissionEntry> {
-    fun runtimeGranted(permission: String): PermissionAuditState {
-        return if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) {
-            PermissionAuditState.GRANTED
-        } else {
-            PermissionAuditState.PENDING
-        }
-    }
-
-    val notificationsState = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        runtimeGranted(Manifest.permission.POST_NOTIFICATIONS)
+private fun readPermissionStatus(context: Context): InteractivePermissionStatus {
+    val notif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
     } else {
-        PermissionAuditState.GRANTED
+        true
     }
-
-    val mediaImagesState = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        runtimeGranted(Manifest.permission.READ_MEDIA_IMAGES)
+    val overlay = Settings.canDrawOverlays(context)
+    val media = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_MEDIA_IMAGES,
+        ) == PackageManager.PERMISSION_GRANTED
     } else {
-        PermissionAuditState.DECLARED_INSTALL_TIME
+        true
     }
-
-    val overlayState = if (Settings.canDrawOverlays(context)) {
-        PermissionAuditState.GRANTED
-    } else {
-        PermissionAuditState.PENDING
-    }
-
-    return listOf(
-        ManifestPermissionEntry("FOREGROUND_SERVICE", "Power & Drop", PermissionAuditState.DECLARED_INSTALL_TIME),
-        ManifestPermissionEntry("POST_NOTIFICATIONS", "Power & SnapClean", notificationsState),
-        ManifestPermissionEntry("SYSTEM_ALERT_WINDOW", "Power Floating HUD", overlayState),
-        ManifestPermissionEntry("READ_MEDIA_IMAGES", "SnapClean Engine", mediaImagesState),
-        ManifestPermissionEntry("ACCESS_WIFI_STATE", "Drop P2P", PermissionAuditState.DECLARED_INSTALL_TIME),
-        ManifestPermissionEntry("CHANGE_WIFI_STATE", "Drop P2P", PermissionAuditState.DECLARED_INSTALL_TIME),
-        ManifestPermissionEntry("ACCESS_NETWORK_STATE", "Drop P2P", PermissionAuditState.DECLARED_INSTALL_TIME),
+    val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val unrestricted = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+    return InteractivePermissionStatus(
+        notificationsGranted = notif,
+        overlayGranted = overlay,
+        mediaGranted = media,
+        unrestrictedBattery = unrestricted,
     )
 }
 
+@SuppressLint("BatteryLife")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ThemeAboutModalSheet(
+fun SettingsModalSheet(
     preferences: AppPreferences,
     onSelectThemeMode: (ThemeMode) -> Unit,
     onToggleDynamicColor: (Boolean) -> Unit,
+    onToggleAutoLaunchAod: (Boolean) -> Unit,
+    onSelectStartupTab: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val supportsDynamicColor = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val permissionEntries = remember(context) { inspectManifestPermissions(context) }
+
+    var refreshTick by remember { mutableIntStateOf(0) }
+    val permStatus = remember(context, refreshTick) { readPermissionStatus(context) }
+
+    // Automatically refresh permission badges when returning from Android System Settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshTick += 1
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val notificationPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { refreshTick += 1 }
+
+    val mediaPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { refreshTick += 1 }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        modifier = Modifier.testTag("theme_about_modal_sheet"),
+        modifier = Modifier.testTag("settings_modal_sheet"),
     ) {
         Column(
             modifier = Modifier
@@ -149,11 +184,21 @@ fun ThemeAboutModalSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(
-                    text = stringResource(R.string.sheet_appearance_title),
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Settings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        text = "Settings",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
                 IconButton(
                     onClick = onDismiss,
                     modifier = Modifier.testTag("sheet_close_button"),
@@ -165,7 +210,8 @@ fun ThemeAboutModalSheet(
                 }
             }
 
-            // Theme Mode Selector Card
+            // 1. Appearance Section
+            SettingsSectionLabel(text = "APPEARANCE")
             Surface(
                 shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
@@ -252,7 +298,7 @@ fun ThemeAboutModalSheet(
                                 )
                                 Text(
                                     text = if (supportsDynamicColor) {
-                                        stringResource(R.string.sheet_dynamic_color_subtitle)
+                                        "Off by default to keep A-Kit's cyan/teal palette"
                                     } else {
                                         stringResource(R.string.sheet_dynamic_color_unavailable)
                                     },
@@ -272,29 +318,276 @@ fun ThemeAboutModalSheet(
                 }
             }
 
-            // About A-Kit Card
+            // 2. Interactive App Permissions Section
+            SettingsSectionLabel(text = "INTERACTIVE APP PERMISSIONS")
             Surface(
                 shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                tonalElevation = 2.dp,
+                tonalElevation = 1.dp,
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                        .padding(vertical = 6.dp),
+                ) {
+                    InteractivePermissionRow(
+                        icon = Icons.Rounded.Notifications,
+                        title = "Notifications",
+                        subtitle = "Charging alarms & SnapClean quick actions",
+                        granted = permStatus.notificationsGranted,
+                        onClick = {
+                            if (!permStatus.notificationsGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                openAppNotificationSettings(context)
+                            }
+                        },
+                        testTag = "perm_row_notifications",
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                    InteractivePermissionRow(
+                        icon = Icons.Rounded.Layers,
+                        title = "Display Over Other Apps",
+                        subtitle = "Floating wattage & thermal HUD pill",
+                        granted = permStatus.overlayGranted,
+                        onClick = {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}"),
+                            )
+                            runCatching { context.startActivity(intent) }
+                        },
+                        testTag = "perm_row_overlay",
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                    InteractivePermissionRow(
+                        icon = Icons.Rounded.PhotoLibrary,
+                        title = "Photos & Media Access",
+                        subtitle = "Monitors Pictures/Screenshots for SnapClean",
+                        granted = permStatus.mediaGranted,
+                        onClick = {
+                            if (!permStatus.mediaGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                mediaPermLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
+                            } else {
+                                openAppDetailsSettings(context)
+                            }
+                        },
+                        testTag = "perm_row_media",
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                    InteractivePermissionRow(
+                        icon = Icons.Rounded.BatteryChargingFull,
+                        title = "Unrestricted Battery Usage",
+                        subtitle = "Prevents OS killing alarms or local Drop server",
+                        granted = permStatus.unrestrictedBattery,
+                        onClick = {
+                            val reqIntent = Intent(
+                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:${context.packageName}"),
+                            )
+                            runCatching { context.startActivity(reqIntent) }
+                                .onFailure {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                                        )
+                                    }
+                                }
+                        },
+                        testTag = "perm_row_battery",
+                    )
+                }
+            }
+
+            // 3. Quick Preferences Section
+            SettingsSectionLabel(text = "QUICK PREFERENCES")
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Bedtime,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Auto-Launch Charging AOD",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = "Open AMOLED AOD automatically on charger plug-in",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Switch(
+                            checked = preferences.autoLaunchAodOnPlugIn,
+                            onCheckedChange = onToggleAutoLaunchAod,
+                            modifier = Modifier.testTag("pref_auto_launch_aod_switch"),
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Default Startup Tab",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AKitDestination.entries.forEach { dest ->
+                                val selected = preferences.defaultStartupTab == dest.route
+                                Surface(
+                                    onClick = { onSelectStartupTab(dest.route) },
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    },
+                                    border = BorderStroke(
+                                        width = if (selected) 1.5.dp else 1.dp,
+                                        color = if (selected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outlineVariant
+                                        },
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(44.dp)
+                                        .testTag("startup_tab_${dest.route}"),
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = stringResource(dest.labelRes),
+                                            style = MaterialTheme.typography.labelLarge.copy(
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            ),
+                                            color = if (selected) {
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            maxLines = 1,
+                                            softWrap = false,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Community & Open Source Section
+            SettingsSectionLabel(text = "COMMUNITY & OPEN SOURCE")
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
+                ) {
+                    CommunityLinkRow(
+                        icon = Icons.Rounded.Groups,
+                        title = "Join Official Community",
+                        subtitle = "Facebook Group • Tips, updates & requests",
+                        onClick = { openExternalUrl(context, "https://facebook.com/groups/akit.community") },
+                        testTag = "link_community_facebook",
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                    CommunityLinkRow(
+                        icon = Icons.Rounded.Code,
+                        title = "Contribute & Star on GitHub",
+                        subtitle = "github.com/Akibxh007/A-Kit",
+                        onClick = { openExternalUrl(context, "https://github.com/Akibxh007/A-Kit") },
+                        testTag = "link_github_repo",
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                    CommunityLinkRow(
+                        icon = Icons.Rounded.Favorite,
+                        title = "Support / Donate Project",
+                        subtitle = "github.com/sponsors/Akibxh007",
+                        onClick = { openExternalUrl(context, "https://github.com/sponsors/Akibxh007") },
+                        testTag = "link_github_sponsors",
+                    )
+                }
+            }
+
+            // About Footer Card
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_akit_emblem_1795442183043),
-                            contentDescription = stringResource(R.string.cd_app_emblem),
-                            contentScale = ContentScale.Crop,
+                        Box(
                             modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(14.dp)),
-                        )
-                        Spacer(modifier = Modifier.width(14.dp))
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(AmoledBrandBlack)
+                                .padding(7.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.drawable.ic_akit_logo_mark),
+                                contentDescription = stringResource(R.string.cd_app_emblem),
+                                modifier = Modifier.size(30.dp),
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -313,146 +606,17 @@ fun ThemeAboutModalSheet(
                                         text = "v${BuildConfig.VERSION_NAME}",
                                         style = MonoLabelStyle,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                     )
                                 }
                             }
                             Text(
-                                text = stringResource(R.string.app_tagline),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-
-                    Text(
-                        text = stringResource(R.string.sheet_about_description),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.VerifiedUser,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
                                 text = stringResource(R.string.sheet_privacy_guarantee),
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary,
                             )
-                        }
-                    }
-                }
-            }
-
-            // Manifest Permission Matrix
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                tonalElevation = 1.dp,
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Lock,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = stringResource(R.string.sheet_permissions_title),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-
-                    permissionEntries.forEach { entry ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = entry.shortName,
-                                    style = MonoLabelStyle,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = entry.moduleOwner,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            val (statusText, statusIcon, containerColor, contentColor) = when (entry.state) {
-                                PermissionAuditState.GRANTED -> Quad(
-                                    stringResource(R.string.status_granted),
-                                    Icons.Rounded.CheckCircle,
-                                    MaterialTheme.colorScheme.secondaryContainer,
-                                    MaterialTheme.colorScheme.onSecondaryContainer,
-                                )
-                                PermissionAuditState.DECLARED_INSTALL_TIME -> Quad(
-                                    stringResource(R.string.status_install_time),
-                                    Icons.Rounded.CheckCircle,
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                                    MaterialTheme.colorScheme.onPrimaryContainer,
-                                )
-                                PermissionAuditState.PENDING -> Quad(
-                                    stringResource(R.string.status_not_granted),
-                                    Icons.Rounded.Schedule,
-                                    MaterialTheme.colorScheme.surfaceContainerHighest,
-                                    MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Surface(
-                                shape = CircleShape,
-                                color = containerColor,
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = statusIcon,
-                                        contentDescription = null,
-                                        tint = contentColor,
-                                        modifier = Modifier.size(12.dp),
-                                    )
-                                    Text(
-                                        text = statusText,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = contentColor,
-                                    )
-                                }
-                            }
                         }
                     }
                 }
@@ -471,6 +635,180 @@ fun ThemeAboutModalSheet(
                     style = MaterialTheme.typography.labelLarge,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSectionLabel(text: String) {
+    Text(
+        text = text,
+        style = MonoLabelStyle,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 4.dp),
+    )
+}
+
+@Composable
+private fun InteractivePermissionRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    granted: Boolean,
+    onClick: () -> Unit,
+    testTag: String,
+) {
+    Surface(
+        onClick = onClick,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (granted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(21.dp),
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (granted) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.tertiaryContainer
+                    },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (granted) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(12.dp),
+                            )
+                        }
+                        Text(
+                            text = if (granted) "GRANTED" else "GRANT",
+                            style = MonoLabelStyle,
+                            color = if (granted) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onTertiaryContainer
+                            },
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityLinkRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    testTag: String,
+) {
+    Surface(
+        onClick = onClick,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(21.dp),
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                contentDescription = "Open link",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }
@@ -530,15 +868,29 @@ private fun ThemeModeOptionChip(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                softWrap = false,
             )
         }
     }
 }
 
-private data class Quad<A, B, C, D>(
-    val first: A,
-    val second: B,
-    val third: C,
-    val fourth: D,
-)
+private fun openAppNotificationSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure { openAppDetailsSettings(context) }
+}
+
+private fun openAppDetailsSettings(context: Context) {
+    val intent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.parse("package:${context.packageName}"),
+    )
+    runCatching { context.startActivity(intent) }
+}
+
+private fun openExternalUrl(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+    runCatching { context.startActivity(intent) }
+}

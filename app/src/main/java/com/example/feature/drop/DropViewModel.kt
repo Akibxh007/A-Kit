@@ -14,11 +14,15 @@ import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -26,6 +30,15 @@ private data class NetworkSnapshot(
     val isWifiEnabled: Boolean,
     val isWifiConnected: Boolean,
     val localIp: String?,
+)
+
+private data class PeerClientState(
+    val peerUrl: String? = null,
+    val isConnecting: Boolean = false,
+    val isConnected: Boolean = false,
+    val snippets: List<DropSnippet> = emptyList(),
+    val files: List<PeerFileItem> = emptyList(),
+    val downloadingFileId: String? = null,
 )
 
 class DropViewModel(application: Application) : AndroidViewModel(application) {
@@ -37,32 +50,50 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
 
     private val networkSnapshot = MutableStateFlow(readNetworkSnapshot())
     private val statusBanner = MutableStateFlow<String?>(null)
+    private val peerState = MutableStateFlow(PeerClientState())
     private val deviceName = resolveDeviceName()
+    private var peerPollingJob: Job? = null
 
     private val serverMetaFlow = combine(
         DropHubCoordinator.isServerRunning,
         DropHubCoordinator.boundPort,
         DropHubCoordinator.activePeerCount,
-    ) { running, port, peers -> Triple(running, port, peers) }
+        DropHubCoordinator.idleShutdownMessage,
+    ) { running, port, peers, idleMsg ->
+        ServerMeta(running, port, peers, idleMsg)
+    }
+
+    private val localContentFlow = combine(
+        DropHubCoordinator.snippets,
+        DropHubCoordinator.sharedFiles,
+        statusBanner,
+    ) { snippets, files, banner ->
+        Triple(snippets, files, banner)
+    }
 
     val uiState: StateFlow<DropUiState> = combine(
         serverMetaFlow,
         networkSnapshot,
-        DropHubCoordinator.snippets,
-        DropHubCoordinator.sharedFiles,
-        statusBanner,
-    ) { (running, port, peers), net, snippets, files, banner ->
+        localContentFlow,
+        peerState,
+    ) { meta, net, (snippets, files, banner), peer ->
         DropUiState(
-            isServerRunning = running,
+            isServerRunning = meta.running,
             isWifiEnabled = net.isWifiEnabled,
             isWifiConnected = net.isWifiConnected,
             localIpAddress = net.localIp,
-            serverPort = port,
+            serverPort = meta.port,
             deviceBeaconName = deviceName,
-            activePeerCount = peers,
+            activePeerCount = meta.peers,
             snippets = snippets,
             sharedFiles = files,
-            statusBanner = banner,
+            connectedPeerUrl = peer.peerUrl,
+            isPeerConnecting = peer.isConnecting,
+            isPeerConnected = peer.isConnected,
+            peerSnippets = peer.snippets,
+            peerFiles = peer.files,
+            downloadingPeerFileId = peer.downloadingFileId,
+            statusBanner = banner ?: meta.idleMsg,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -108,10 +139,12 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissBanner() {
         statusBanner.value = null
+        DropHubCoordinator.clearIdleShutdownMessage()
     }
 
     fun toggleDropServer() {
         refreshNetwork()
+        DropHubCoordinator.clearIdleShutdownMessage()
         if (DropHubCoordinator.isServerRunning.value) {
             DropServerService.stop(getApplication())
             statusBanner.value = "Local Drop Server stopped."
@@ -133,7 +166,7 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         statusBanner.value = if (DropHubCoordinator.isServerRunning.value) {
             "Snippet pushed live to Web Portal."
         } else {
-            "Snippet staged. Start the Local Drop Server so nearby browsers can grab it."
+            "Snippet staged. Start the Local Drop Server so nearby devices can grab it."
         }
     }
 
@@ -148,6 +181,113 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (count > 0) {
                 statusBanner.value = "Added $count item(s) to the Local Drop Portal."
+            }
+        }
+    }
+
+    // --- Native In-App Peer Client Mode (QR Scan / akit://drop Deep Link) ---
+
+    fun connectToPeerUrl(rawUrl: String) {
+        val normalized = DropUrlParser.normalizeDropTargetUrl(rawUrl)
+        if (normalized == null) {
+            statusBanner.value = "Invalid A-Kit Drop URL."
+            return
+        }
+        peerPollingJob?.cancel()
+        peerState.value = PeerClientState(
+            peerUrl = normalized,
+            isConnecting = true,
+            isConnected = false,
+        )
+        statusBanner.value = "Connecting to peer at $normalized..."
+
+        peerPollingJob = viewModelScope.launch(Dispatchers.IO) {
+            var consecutiveFailures = 0
+            while (isActive) {
+                val result = DropPeerClient.fetchState(normalized)
+                if (result.isSuccess) {
+                    val payload = result.getOrThrow()
+                    val firstConnect = !peerState.value.isConnected
+                    consecutiveFailures = 0
+                    peerState.update {
+                        it.copy(
+                            isConnecting = false,
+                            isConnected = true,
+                            snippets = payload.snippets,
+                            files = payload.files,
+                        )
+                    }
+                    if (firstConnect) {
+                        statusBanner.value = "Connected natively to $normalized"
+                    }
+                } else {
+                    consecutiveFailures += 1
+                    if (consecutiveFailures >= 3) {
+                        peerState.update { it.copy(isConnecting = false, isConnected = false) }
+                        statusBanner.value = "Cannot reach $normalized. Ensure both devices are on the same Wi-Fi or Hotspot."
+                    }
+                }
+                delay(2_500L)
+            }
+        }
+    }
+
+    fun disconnectPeer() {
+        peerPollingJob?.cancel()
+        peerPollingJob = null
+        peerState.value = PeerClientState()
+        statusBanner.value = "Disconnected from remote Drop peer."
+    }
+
+    fun sendSnippetToPeer(text: String) {
+        val url = peerState.value.peerUrl ?: return
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = DropPeerClient.sendSnippet(url, trimmed)
+            if (res.isSuccess) {
+                statusBanner.value = "Snippet sent to peer."
+                DropPeerClient.fetchState(url).getOrNull()?.let { payload ->
+                    peerState.update { it.copy(snippets = payload.snippets, files = payload.files) }
+                }
+            } else {
+                statusBanner.value = "Failed to send snippet to peer."
+            }
+        }
+    }
+
+    fun uploadFilesToPeer(uris: List<Uri>) {
+        val url = peerState.value.peerUrl ?: return
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            statusBanner.value = "Uploading ${uris.size} item(s) to peer..."
+            var successCount = 0
+            uris.forEach { uri ->
+                if (DropPeerClient.uploadUri(getApplication(), url, uri).isSuccess) {
+                    successCount++
+                }
+            }
+            if (successCount > 0) {
+                statusBanner.value = "Uploaded $successCount item(s) to peer's Downloads/A-Kit."
+                DropPeerClient.fetchState(url).getOrNull()?.let { payload ->
+                    peerState.update { it.copy(snippets = payload.snippets, files = payload.files) }
+                }
+            } else {
+                statusBanner.value = "Upload failed. Check that the peer server is still online."
+            }
+        }
+    }
+
+    fun downloadPeerFile(item: PeerFileItem) {
+        val url = peerState.value.peerUrl ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            peerState.update { it.copy(downloadingFileId = item.id) }
+            val result = DropPeerClient.downloadFileToDownloads(getApplication(), url, item)
+            peerState.update { it.copy(downloadingFileId = null) }
+            statusBanner.value = if (result.isSuccess) {
+                "Saved \"${item.fileName}\" to Downloads/A-Kit."
+            } else {
+                "Failed to download \"${item.fileName}\"."
             }
         }
     }
@@ -179,8 +319,16 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        peerPollingJob?.cancel()
         runCatching { getApplication<Application>().unregisterReceiver(wifiStateReceiver) }
         runCatching { connectivityManager?.unregisterNetworkCallback(networkCallback) }
         super.onCleared()
     }
+
+    private data class ServerMeta(
+        val running: Boolean,
+        val port: Int,
+        val peers: Int,
+        val idleMsg: String?,
+    )
 }

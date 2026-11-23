@@ -33,6 +33,10 @@ class PowerViewModel(application: Application) : AndroidViewModel(application) {
         PowerTelemetryEngine.refreshPermissions()
     }
 
+    fun setPowerScreenVisible(visible: Boolean) {
+        PowerTelemetryEngine.setPowerScreenVisible(visible)
+    }
+
     fun toggleTempUnit() {
         PowerTelemetryEngine.updateSettings {
             val next = if (it.tempUnit == TempUnit.CELSIUS) TempUnit.FAHRENHEIT else TempUnit.CELSIUS

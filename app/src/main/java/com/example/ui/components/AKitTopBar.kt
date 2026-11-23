@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +18,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -27,53 +28,59 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.ui.theme.AmoledBrandBlack
 import com.example.ui.theme.MonoLabelStyle
 
 @Composable
 fun AKitTopBar(
-    onOpenThemeAbout: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
+        color = MaterialTheme.colorScheme.background.copy(alpha = 0.96f),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            // Branding Badge: Emblem + A-Kit + Offline Pill
+            // Branding Badge: Flat Vector Logo Mark + A-Kit + Offline Pill
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.testTag("akit_brand_badge"),
             ) {
                 Surface(
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    color = AmoledBrandBlack,
                     border = BorderStroke(
                         width = 1.dp,
                         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
                     ),
-                    tonalElevation = 2.dp,
                 ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_akit_emblem_1795442183043),
-                        contentDescription = stringResource(R.string.cd_app_emblem),
-                        contentScale = ContentScale.Crop,
+                    Box(
                         modifier = Modifier
                             .size(40.dp)
-                            .clip(RoundedCornerShape(14.dp)),
-                    )
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(AmoledBrandBlack)
+                            .padding(6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_akit_logo_mark),
+                            contentDescription = stringResource(R.string.cd_app_emblem),
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.width(12.dp))
@@ -89,10 +96,12 @@ fun AKitTopBar(
                                 fontWeight = FontWeight.Bold,
                             ),
                             color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            softWrap = false,
                         )
                         Surface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
                             border = BorderStroke(
                                 width = 1.dp,
                                 color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f),
@@ -113,6 +122,8 @@ fun AKitTopBar(
                                     text = stringResource(R.string.badge_offline_only),
                                     style = MonoLabelStyle,
                                     color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    maxLines = 1,
+                                    softWrap = false,
                                 )
                             }
                         }
@@ -121,13 +132,14 @@ fun AKitTopBar(
                         text = stringResource(R.string.app_tagline),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
             }
 
-            // Theme & About Modal Trigger (48.dp touch target)
+            // Standard Settings Gear Trigger (48.dp touch target)
             Surface(
-                onClick = onOpenThemeAbout,
+                onClick = onOpenSettings,
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 tonalElevation = 3.dp,
@@ -137,12 +149,12 @@ fun AKitTopBar(
                 ),
                 modifier = Modifier
                     .size(48.dp)
-                    .testTag("theme_about_button"),
+                    .testTag("settings_button"),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Rounded.Palette,
-                        contentDescription = stringResource(R.string.cd_theme_about_button),
+                        imageVector = Icons.Rounded.Settings,
+                        contentDescription = "Open A-Kit Settings",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(22.dp),
                     )

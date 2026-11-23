@@ -204,28 +204,35 @@ fun PowerDiagnosticsSheet(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Design Capacity Reference",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
                             )
                             Text(
-                                text = "Estimated: ${state.estimatedCapacityMah?.let { "$it mAh" } ?: "Calibrating"} / Design: ${settings.designCapacityMah} mAh",
+                                text = "Est: ${state.estimatedCapacityMah?.let { "$it mAh" } ?: "Calibrating"} / ${settings.designCapacityMah} mAh",
                                 style = MonoLabelStyle,
                                 color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
                             )
                         }
+                        Spacer(modifier = Modifier.width(10.dp))
                         Surface(
                             onClick = onResetAutoCapacity,
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.testTag("power_auto_capacity_button"),
                         ) {
                             Text(
                                 text = "AUTO",
                                 style = MonoLabelStyle,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                             )
                         }
                     }

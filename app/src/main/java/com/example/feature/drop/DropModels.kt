@@ -1,5 +1,7 @@
 package com.example.feature.drop
 
+import android.net.Uri
+import androidx.compose.runtime.Immutable
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.Locale
@@ -9,6 +11,7 @@ enum class DropDirection {
     FROM_BROWSER,
 }
 
+@Immutable
 data class DropSnippet(
     val id: String,
     val text: String,
@@ -17,6 +20,7 @@ data class DropSnippet(
     val timestampMs: Long,
 )
 
+@Immutable
 data class DropFileItem(
     val id: String,
     val fileName: String,
@@ -42,6 +46,17 @@ data class DropFileItem(
     }
 }
 
+@Immutable
+data class PeerFileItem(
+    val id: String,
+    val fileName: String,
+    val mimeType: String,
+    val sizeLabel: String,
+    val sourceLabel: String,
+    val isImage: Boolean,
+)
+
+@Immutable
 data class DropUiState(
     val isServerRunning: Boolean = false,
     val isWifiEnabled: Boolean = false,
@@ -52,10 +67,58 @@ data class DropUiState(
     val activePeerCount: Int = 0,
     val snippets: List<DropSnippet> = emptyList(),
     val sharedFiles: List<DropFileItem> = emptyList(),
+    val connectedPeerUrl: String? = null,
+    val isPeerConnecting: Boolean = false,
+    val isPeerConnected: Boolean = false,
+    val peerSnippets: List<DropSnippet> = emptyList(),
+    val peerFiles: List<PeerFileItem> = emptyList(),
+    val downloadingPeerFileId: String? = null,
     val statusBanner: String? = null,
 ) {
     val serverUrl: String?
         get() = localIpAddress?.let { "http://$it:$serverPort" }
+}
+
+object DropUrlParser {
+
+    /**
+     * Extracts a clean LAN HTTP base URL (e.g. http://192.168.1.5:8080) from:
+     * - akit://drop?url=http%3A%2F%2F192.168.1.5%3A8080
+     * - akit://drop/192.168.1.5:8080
+     * - http://192.168.1.5:8080/...
+     * - 192.168.1.5:8080
+     */
+    fun normalizeDropTargetUrl(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+
+        val candidate = if (trimmed.startsWith("akit://", ignoreCase = true)) {
+            val parsed = runCatching { Uri.parse(trimmed) }.getOrNull() ?: return null
+            val queryUrl = parsed.getQueryParameter("url")
+            val hostParam = parsed.getQueryParameter("host")
+            val portParam = parsed.getQueryParameter("port") ?: "8080"
+            when {
+                !queryUrl.isNullOrBlank() -> queryUrl.trim()
+                !hostParam.isNullOrBlank() -> "http://$hostParam:$portParam"
+                !parsed.path.isNullOrBlank() -> parsed.path!!.trimStart('/')
+                else -> return null
+            }
+        } else {
+            trimmed
+        }
+
+        val withScheme = when {
+            candidate.startsWith("http://", ignoreCase = true) ||
+                candidate.startsWith("https://", ignoreCase = true) -> candidate
+            else -> "http://$candidate"
+        }
+
+        val uri = runCatching { Uri.parse(withScheme) }.getOrNull() ?: return null
+        val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+        val scheme = uri.scheme?.lowercase(Locale.US)?.takeIf { it == "http" || it == "https" } ?: "http"
+        val port = if (uri.port > 0) uri.port else 8080
+        return "$scheme://$host:$port"
+    }
 }
 
 object LocalNetworkUtils {
@@ -71,7 +134,6 @@ object LocalNetworkUtils {
             for (nif in interfaces) {
                 if (!nif.isUp || nif.isLoopback || nif.isVirtual) continue
                 val name = nif.name.lowercase(Locale.US)
-                // Skip cellular data interfaces where inbound peer connections are blocked
                 if (name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("tun") || name.startsWith("ppp")) {
                     continue
                 }

@@ -1,10 +1,12 @@
 package com.example.data
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -25,14 +27,17 @@ enum class ThemeMode(val storageKey: String) {
     }
 }
 
+@Immutable
 data class AppPreferences(
     val themeMode: ThemeMode = ThemeMode.AMOLED,
-    val dynamicColor: Boolean = true,
-    val snapCleanRetentionHours: Int = 168,
+    val dynamicColor: Boolean = false,
+    val autoLaunchAodOnPlugIn: Boolean = false,
+    val defaultStartupTab: String = "power",
+    val snapCleanRetentionHours: Int = 72,
 )
 
 private val Context.akitDataStore: DataStore<Preferences> by preferencesDataStore(
-    name = "akit_local_preferences"
+    name = "akit_local_preferences",
 )
 
 class ThemePreferencesRepository(private val context: Context) {
@@ -40,13 +45,15 @@ class ThemePreferencesRepository(private val context: Context) {
     private object Keys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val AUTO_LAUNCH_AOD = booleanPreferencesKey("auto_launch_aod_on_plug")
+        val DEFAULT_STARTUP_TAB = stringPreferencesKey("default_startup_tab")
         val SNAPCLEAN_RETENTION_HOURS = intPreferencesKey("snapclean_retention_hours")
     }
 
     val preferencesFlow: Flow<AppPreferences> = context.akitDataStore.data
         .catch { exception ->
             if (exception is IOException) {
-                emit(androidx.datastore.preferences.core.emptyPreferences())
+                emit(emptyPreferences())
             } else {
                 throw exception
             }
@@ -54,8 +61,10 @@ class ThemePreferencesRepository(private val context: Context) {
         .map { prefs ->
             AppPreferences(
                 themeMode = ThemeMode.fromKey(prefs[Keys.THEME_MODE]),
-                dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,
-                snapCleanRetentionHours = prefs[Keys.SNAPCLEAN_RETENTION_HOURS] ?: 168,
+                dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: false,
+                autoLaunchAodOnPlugIn = prefs[Keys.AUTO_LAUNCH_AOD] ?: false,
+                defaultStartupTab = prefs[Keys.DEFAULT_STARTUP_TAB] ?: "power",
+                snapCleanRetentionHours = prefs[Keys.SNAPCLEAN_RETENTION_HOURS] ?: 72,
             )
         }
 
@@ -68,6 +77,18 @@ class ThemePreferencesRepository(private val context: Context) {
     suspend fun setDynamicColor(enabled: Boolean) {
         context.akitDataStore.edit { prefs ->
             prefs[Keys.DYNAMIC_COLOR] = enabled
+        }
+    }
+
+    suspend fun setAutoLaunchAodOnPlugIn(enabled: Boolean) {
+        context.akitDataStore.edit { prefs ->
+            prefs[Keys.AUTO_LAUNCH_AOD] = enabled
+        }
+    }
+
+    suspend fun setDefaultStartupTab(tabRoute: String) {
+        context.akitDataStore.edit { prefs ->
+            prefs[Keys.DEFAULT_STARTUP_TAB] = tabRoute
         }
     }
 

@@ -44,12 +44,34 @@ object DropHubCoordinator {
     private val _activePeerCount = MutableStateFlow(0)
     val activePeerCount: StateFlow<Int> = _activePeerCount.asStateFlow()
 
+    private val _idleShutdownMessage = MutableStateFlow<String?>(null)
+    val idleShutdownMessage: StateFlow<String?> = _idleShutdownMessage.asStateFlow()
+
+    @Volatile
+    var lastActivityMs: Long = System.currentTimeMillis()
+        private set
+
     private val recentPeers = ConcurrentHashMap<String, Long>()
+
+    fun touchActivity() {
+        lastActivityMs = System.currentTimeMillis()
+    }
+
+    fun notifyIdleShutdown(message: String) {
+        _idleShutdownMessage.value = message
+    }
+
+    fun clearIdleShutdownMessage() {
+        _idleShutdownMessage.value = null
+    }
 
     fun setServerStatus(running: Boolean, port: Int = 8080) {
         _isServerRunning.value = running
         _boundPort.value = port
-        if (!running) {
+        if (running) {
+            touchActivity()
+            _idleShutdownMessage.value = null
+        } else {
             recentPeers.clear()
             _activePeerCount.value = 0
         }
@@ -57,6 +79,7 @@ object DropHubCoordinator {
 
     fun recordClientActivity(remoteIp: String?) {
         val now = System.currentTimeMillis()
+        lastActivityMs = now
         if (!remoteIp.isNullOrBlank()) {
             recentPeers[remoteIp] = now
         }
@@ -68,6 +91,7 @@ object DropHubCoordinator {
     fun addSnippetFromPhone(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        touchActivity()
         val item = DropSnippet(
             id = "snip_${UUID.randomUUID().toString().take(8)}",
             text = trimmed,
@@ -81,7 +105,8 @@ object DropHubCoordinator {
     fun addSnippetFromBrowser(text: String, clientIp: String?) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
-        val label = if (!clientIp.isNullOrBlank()) "Browser ($clientIp)" else "Browser Peer"
+        touchActivity()
+        val label = if (!clientIp.isNullOrBlank()) "Peer ($clientIp)" else "Peer Device"
         val item = DropSnippet(
             id = "snip_${UUID.randomUUID().toString().take(8)}",
             text = trimmed,
@@ -93,6 +118,7 @@ object DropHubCoordinator {
     }
 
     fun shareFileFromPhone(context: Context, uri: Uri): DropFileItem? {
+        touchActivity()
         return runCatching {
             val resolver = context.contentResolver
             var displayName = "Shared_${System.currentTimeMillis()}"

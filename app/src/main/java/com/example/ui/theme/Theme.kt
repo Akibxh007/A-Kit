@@ -122,7 +122,7 @@ private fun ColorScheme.withAmoledSurfaces(): ColorScheme = copy(
 @Composable
 fun AKitTheme(
     themeMode: ThemeMode = ThemeMode.AMOLED,
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()

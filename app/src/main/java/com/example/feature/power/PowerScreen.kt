@@ -97,15 +97,25 @@ fun PowerScreen(
 
     var activeSheet by rememberSaveable { mutableStateOf(PowerActiveSheet.NONE) }
 
-    // Refresh overlay & notification permission status when returning from System Settings
+    // Lifecycle-aware polling (1500ms ONLY while PowerScreen is visible) & permission refresh
     DisposableEffect(lifecycleOwner) {
+        viewModel.setPowerScreenVisible(true)
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshPermissions()
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.setPowerScreenVisible(true)
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.setPowerScreenVisible(true)
+                    viewModel.refreshPermissions()
+                }
+                Lifecycle.Event.ON_STOP -> viewModel.setPowerScreenVisible(false)
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setPowerScreenVisible(false)
+        }
     }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -115,7 +125,7 @@ fun PowerScreen(
     }
 
     val animatedBatteryProgress by animateFloatAsState(
-        targetValue = (state.levelPercent / 100f).coerceIn(0f, 1f),
+        targetValue = (state.exactLevelPercent / 100f).coerceIn(0f, 1f),
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioNoBouncy,
             stiffness = Spring.StiffnessLow,
@@ -181,13 +191,13 @@ fun PowerScreen(
         // 1. Live Wattage, Dual-Cell & Battery Hero Card
         item(key = "power_hero") {
             ModuleHeroCard(
-                moduleCode = if (settings.dualCellMode) {
-                    "MOD-01 • 2S DUAL-CELL"
-                } else {
-                    stringResource(R.string.power_module_code)
+                moduleCode = when {
+                    settings.dualCellMode -> "MOD-01 • 2S DUAL-CELL"
+                    state.isAutoDualCellDetected -> "MOD-01 • AUTO 2S PACK"
+                    else -> stringResource(R.string.power_module_code)
                 },
                 title = stringResource(R.string.power_hero_title),
-                subtitle = "100% unlocked live wattage, dual-cell math, HUD overlay, Charging AOD & thermal guards.",
+                subtitle = "100% unlocked live wattage, decimal charge precision, HUD overlay, Charging AOD & thermal guards.",
                 icon = if (state.isCharging) Icons.Rounded.BatteryChargingFull else Icons.Rounded.Bolt,
                 accentColor = MaterialTheme.colorScheme.primary,
                 accentContainerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -217,6 +227,8 @@ fun PowerScreen(
                                     text = if (state.isCharging) "CHARGING POWER" else "SYSTEM DRAW",
                                     style = MonoLabelStyle,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
                                 )
                                 Row(
                                     verticalAlignment = Alignment.Bottom,
@@ -229,12 +241,16 @@ fun PowerScreen(
                                             fontWeight = FontWeight.Bold,
                                         ),
                                         color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         modifier = Modifier.testTag("power_live_wattage_text"),
                                     )
                                     Text(
                                         text = "${if (state.currentNowMa >= 0) "+" else ""}${state.currentNowMa} mA",
                                         style = MonoLabelStyle.copy(fontSize = 13.sp),
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         modifier = Modifier.padding(bottom = 5.dp),
                                     )
                                 }
@@ -242,14 +258,19 @@ fun PowerScreen(
 
                             Column(horizontalAlignment = Alignment.End) {
                                 Text(
-                                    text = "${state.levelPercent}%",
+                                    text = String.format(Locale.US, "%.2f%%", state.exactLevelPercent),
                                     style = MonoMetricStyle.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.testTag("power_decimal_percent_text"),
                                 )
                                 Text(
                                     text = "${state.statusLabel} • ${state.pluggedLabel}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
                                 )
                             }
                         }
@@ -265,14 +286,53 @@ fun PowerScreen(
                             strokeCap = StrokeCap.Round,
                         )
 
+                        // Live Estimated Time Remaining strip
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                            ) {
+                                Text(
+                                    text = state.estimatedTimeLabel,
+                                    style = MonoLabelStyle.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        .testTag("power_estimate_time_badge"),
+                                )
+                            }
+                            Text(
+                                text = String.format(
+                                    Locale.US,
+                                    "Peak %.1f W • %.2f V",
+                                    state.peakSessionWatts,
+                                    state.effectiveVoltageMv / 1000f,
+                                ),
+                                style = MonoLabelStyle,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+
                         // Quick Hardware Control Pills: Dual-Cell + °C/°F + Calibration
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             QuickToggleChip(
-                                label = if (settings.dualCellMode) "2S Dual-Cell: ON" else "Dual-Cell: OFF",
-                                selected = settings.dualCellMode,
+                                label = when {
+                                    settings.dualCellMode -> "2S Dual-Cell: ON"
+                                    state.isAutoDualCellDetected -> "2S Auto-Active"
+                                    else -> "Dual-Cell: OFF"
+                                },
+                                selected = state.effectiveDualCellActive,
                                 onClick = { viewModel.setDualCellMode(!settings.dualCellMode) },
                                 modifier = Modifier
                                     .weight(1.25f)
@@ -363,7 +423,7 @@ fun PowerScreen(
                         } else {
                             "-- mV"
                         },
-                        sublabel = if (settings.dualCellMode) {
+                        sublabel = if (state.effectiveDualCellActive) {
                             "2S × ${state.rawVoltageMv} mV"
                         } else {
                             String.format(Locale.US, "%.2f V single-cell", state.effectiveVoltageMv / 1000f)
@@ -842,6 +902,8 @@ private fun QuickToggleChip(
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }

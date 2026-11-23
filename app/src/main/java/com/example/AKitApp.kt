@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -44,11 +45,12 @@ import com.example.data.ThemePreferencesRepository
 import com.example.feature.drop.DropScreen
 import com.example.feature.drop.DropViewModel
 import com.example.feature.power.PowerScreen
+import com.example.feature.power.PowerTelemetryEngine
 import com.example.feature.power.PowerViewModel
 import com.example.feature.snapclean.SnapCleanScreen
 import com.example.feature.snapclean.SnapCleanViewModel
 import com.example.ui.components.AKitTopBar
-import com.example.ui.components.ThemeAboutModalSheet
+import com.example.ui.components.SettingsModalSheet
 import com.example.ui.navigation.AKitDestination
 import com.example.ui.navigation.AKitNavigationRail
 import com.example.ui.navigation.FloatingPillNavBar
@@ -81,6 +83,19 @@ class AKitAppViewModel(
             preferencesRepository.setDynamicColor(enabled)
         }
     }
+
+    fun setAutoLaunchAodOnPlugIn(enabled: Boolean) {
+        PowerTelemetryEngine.setAutoLaunchAodOnPlugIn(enabled)
+        viewModelScope.launch {
+            preferencesRepository.setAutoLaunchAodOnPlugIn(enabled)
+        }
+    }
+
+    fun setDefaultStartupTab(tabRoute: String) {
+        viewModelScope.launch {
+            preferencesRepository.setDefaultStartupTab(tabRoute)
+        }
+    }
 }
 
 class AKitViewModelFactory(
@@ -106,6 +121,8 @@ class AKitViewModelFactory(
 @Composable
 fun AKitApp(
     preferencesRepository: ThemePreferencesRepository,
+    incomingDropUrl: String? = null,
+    onConsumeIncomingDropUrl: () -> Unit = {},
 ) {
     val application = LocalContext.current.applicationContext as Application
     val factory = AKitViewModelFactory(application, preferencesRepository)
@@ -117,7 +134,34 @@ fun AKitApp(
 
     val preferences by appViewModel.preferences.collectAsStateWithLifecycle()
     var currentDestination by rememberSaveable { mutableStateOf(AKitDestination.POWER) }
-    var showThemeAboutSheet by rememberSaveable { mutableStateOf(false) }
+    var appliedStartupTab by rememberSaveable { mutableStateOf(false) }
+    var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
+
+    // Keep Charging AOD auto-launch setting synchronized with PowerTelemetryEngine
+    LaunchedEffect(preferences.autoLaunchAodOnPlugIn) {
+        PowerTelemetryEngine.setAutoLaunchAodOnPlugIn(preferences.autoLaunchAodOnPlugIn)
+    }
+
+    // Apply user's preferred Default Startup Tab once on cold launch (unless a Drop deep link arrived)
+    LaunchedEffect(preferences.defaultStartupTab, incomingDropUrl) {
+        if (!appliedStartupTab && incomingDropUrl == null) {
+            val preferred = AKitDestination.entries.firstOrNull { it.route == preferences.defaultStartupTab }
+            if (preferred != null) {
+                currentDestination = preferred
+            }
+            appliedStartupTab = true
+        }
+    }
+
+    // Open Drop tab & auto-connect natively when launched via akit://drop or LAN Drop URL
+    LaunchedEffect(incomingDropUrl) {
+        if (!incomingDropUrl.isNullOrBlank()) {
+            appliedStartupTab = true
+            currentDestination = AKitDestination.DROP
+            dropViewModel.connectToPeerUrl(incomingDropUrl)
+            onConsumeIncomingDropUrl()
+        }
+    }
 
     // Return to primary Power tab on system Back when viewing secondary tabs
     BackHandler(enabled = currentDestination != AKitDestination.POWER) {
@@ -146,7 +190,7 @@ fun AKitApp(
                     contentWindowInsets = WindowInsets(0, 0, 0, 0),
                     topBar = {
                         AKitTopBar(
-                            onOpenThemeAbout = { showThemeAboutSheet = true },
+                            onOpenSettings = { showSettingsSheet = true },
                         )
                     },
                 ) { innerPadding ->
@@ -155,14 +199,15 @@ fun AKitApp(
                             .fillMaxSize()
                             .padding(innerPadding),
                     ) {
+                        // Generous bottom clearance so scrolling cards/buttons are NEVER obscured by floating pill nav
                         val listContentPadding = PaddingValues(
                             start = 16.dp,
                             end = 16.dp,
                             top = 8.dp,
                             bottom = if (useNavigationRail) {
-                                24.dp + navBarBottomInset
+                                28.dp + navBarBottomInset
                             } else {
-                                116.dp + navBarBottomInset
+                                128.dp + navBarBottomInset
                             },
                         )
 
@@ -217,12 +262,14 @@ fun AKitApp(
                 }
             }
 
-            if (showThemeAboutSheet) {
-                ThemeAboutModalSheet(
+            if (showSettingsSheet) {
+                SettingsModalSheet(
                     preferences = preferences,
                     onSelectThemeMode = appViewModel::setThemeMode,
                     onToggleDynamicColor = appViewModel::setDynamicColor,
-                    onDismiss = { showThemeAboutSheet = false },
+                    onToggleAutoLaunchAod = appViewModel::setAutoLaunchAodOnPlugIn,
+                    onSelectStartupTab = appViewModel::setDefaultStartupTab,
+                    onDismiss = { showSettingsSheet = false },
                 )
             }
         }
