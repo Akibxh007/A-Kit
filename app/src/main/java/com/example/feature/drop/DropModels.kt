@@ -83,6 +83,7 @@ data class DropUiState(
     val snippets: List<DropSnippet> = emptyList(),
     val sharedFiles: List<DropFileItem> = emptyList(),
     val connectedPeerUrl: String? = null,
+    val connectedPeerDeviceName: String? = null,
     val connectedWifiSsid: String? = null,
     val isPeerConnecting: Boolean = false,
     val isPeerConnected: Boolean = false,

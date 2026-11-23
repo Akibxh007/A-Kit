@@ -312,7 +312,7 @@ fun PowerScreen(
                                     Locale.US,
                                     "Peak %.1f W • %.2f V",
                                     state.peakSessionWatts,
-                                    state.effectiveVoltageMv / 1000f,
+                                    state.rawVoltageMv / 1000f,
                                 ),
                                 style = MonoLabelStyle,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -418,15 +418,15 @@ fun PowerScreen(
                     )
                     TelemetryMetricCard(
                         label = stringResource(R.string.power_metric_voltage),
-                        value = if (state.effectiveVoltageMv > 0) {
-                            "${state.effectiveVoltageMv} mV"
+                        value = if (state.rawVoltageMv > 0) {
+                            String.format(Locale.US, "%.2f V", state.rawVoltageMv / 1000f)
                         } else {
-                            "-- mV"
+                            "-- V"
                         },
-                        sublabel = if (state.effectiveDualCellActive) {
-                            "2S × ${state.rawVoltageMv} mV"
+                        sublabel = if (state.rawVoltageMv > 0) {
+                            "${state.rawVoltageMv} mV single-cell"
                         } else {
-                            String.format(Locale.US, "%.2f V single-cell", state.effectiveVoltageMv / 1000f)
+                            "Single-cell voltage"
                         },
                         icon = Icons.Rounded.ElectricBolt,
                         accentColor = MaterialTheme.colorScheme.primary,

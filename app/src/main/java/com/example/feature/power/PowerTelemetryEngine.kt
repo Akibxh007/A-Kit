@@ -370,13 +370,11 @@ object PowerTelemetryEngine {
             abs(rawCurrent) >= 10_000 -> abs(rawCurrent) / 1000f
             else -> abs(rawCurrent).toFloat()
         }
-        val absMaInt = absMaFloat.roundToInt()
-        val signedMa = if (isCharging) absMaInt else -absMaInt
 
         val currentSettings = _state.value.settings
         val designMah = currentSettings.designCapacityMah.coerceAtLeast(1000)
 
-        // Read hardware Charge Counter (µAh) for capacity health & 2S auto-detection
+        // Read hardware Charge Counter (µAh) for capacity health & 2S detection
         val chargeCounterUah = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
             ?.takeIf { it != Int.MIN_VALUE && it > 0 }
 
@@ -387,12 +385,8 @@ object PowerTelemetryEngine {
             null
         }
 
-        // Smart Dual-Cell (2S) auto-detection on first run:
-        // Detects 2S series packs when single-cell voltage is reported (~3.0-5.4V) AND either:
-        //  (a) Charge counter yields ~half the design capacity (< 62% of designMah), OR
-        //  (b) High-speed fast charging (>15W raw or effective 2S charge pump on AC) is detected on first run.
-        // Never doubles if the kernel already reports series pack voltage (> 5.4V),
-        // and always respects manual user toggles once overridden.
+        // Dual-Cell / Charge-Pump calibration (ON by default on fresh install):
+        // Detects dual-cell / 2:1 charge-pump signatures when kernel reports single-cell voltage (~3.0-5.4V).
         val kernelReportsSingleCellVoltage = normalizedVoltageMv in 3000..5400
         val rawSingleCellWatts = (normalizedVoltageMv / 1000f) * (absMaFloat / 1000f)
         val halfCapacitySignature = rawEstimatedFullMah != null &&
@@ -404,17 +398,6 @@ object PowerTelemetryEngine {
         val autoDualCellDetected = kernelReportsSingleCellVoltage &&
             (halfCapacitySignature || fastChargePumpSignature)
 
-        // Automatically enable Dual-Cell calibration on first run if not manually overridden
-        if (autoDualCellDetected && !currentSettings.dualCellUserOverridden && !currentSettings.dualCellMode) {
-            updateSettings { prevSettings ->
-                if (!prevSettings.dualCellUserOverridden && !prevSettings.dualCellMode) {
-                    prevSettings.copy(dualCellMode = true)
-                } else {
-                    prevSettings
-                }
-            }
-        }
-
         val userOrAutoDualCell = if (currentSettings.dualCellUserOverridden) {
             currentSettings.dualCellMode
         } else {
@@ -422,11 +405,17 @@ object PowerTelemetryEngine {
         }
 
         val effectiveDualCell = userOrAutoDualCell && kernelReportsSingleCellVoltage
-        val cellMultiplier = if (effectiveDualCell) 2 else 1
-        val effectiveVoltageMv = normalizedVoltageMv * cellMultiplier
 
-        // Accurate real-time pack wattage: Effective Pack Voltage (V) * Current (A)
-        val watts = (effectiveVoltageMv / 1000f) * (absMaFloat / 1000f)
+        // Keep displayed voltage strictly as actual single-cell battery voltage (e.g. 3.98 V).
+        // Apply the 2x charge-pump / dual-cell multiplier ONLY to charging current & wattage.
+        val effectiveVoltageMv = normalizedVoltageMv
+        val chargeCurrentMultiplier = if (effectiveDualCell && isCharging) 2f else 1f
+        val calibratedAbsMaFloat = absMaFloat * chargeCurrentMultiplier
+        val calibratedAbsMaInt = calibratedAbsMaFloat.roundToInt()
+        val signedMa = if (isCharging) calibratedAbsMaInt else -calibratedAbsMaInt
+
+        // Accurate real-time wattage: Single-Cell Voltage (V) * Calibrated Current (A)
+        val watts = (effectiveVoltageMv / 1000f) * (calibratedAbsMaFloat / 1000f)
 
         val estimatedMah = when {
             rawEstimatedFullMah == null -> null
@@ -439,27 +428,26 @@ object PowerTelemetryEngine {
 
         val now = System.currentTimeMillis()
 
-        // Smooth live decimal battery percentage via charge-counter + 2S-normalized coulomb interpolation
+        // Smooth live decimal battery percentage using calibrated net current (never double-counted)
         val exactPercent = computeSmoothDecimalPercent(
             osPercent = percent,
             isCharging = isCharging,
-            absMaFloat = absMaFloat,
+            calibratedAbsMaFloat = calibratedAbsMaFloat,
             chargeCounterUah = chargeCounterUah,
             effectiveFullMah = effectiveFullMah,
             effectiveDualCell = effectiveDualCell,
             nowMs = now,
         )
 
-        // Accurate Watt-Hour Energy Time Estimate (never double-counts 2S series current)
+        // Accurate Watt-Hour Energy Time Estimate using actual net charging power/capacity
         val (estimateLong, estimateShort) = computeTimeEstimate(
             bm = bm,
             osPercent = percent,
             exactPercent = exactPercent,
             isCharging = isCharging,
             watts = watts,
-            absMaFloat = absMaFloat,
+            calibratedAbsMaFloat = calibratedAbsMaFloat,
             effectiveFullMah = effectiveFullMah,
-            effectiveDualCell = effectiveDualCell,
         )
 
         // Track automatic session start/end transitions
@@ -559,7 +547,7 @@ object PowerTelemetryEngine {
     private fun computeSmoothDecimalPercent(
         osPercent: Int,
         isCharging: Boolean,
-        absMaFloat: Float,
+        calibratedAbsMaFloat: Float,
         chargeCounterUah: Int?,
         effectiveFullMah: Float,
         effectiveDualCell: Boolean,
@@ -607,11 +595,9 @@ object PowerTelemetryEngine {
         lastIntegrationMs = nowMs
         if (dtMs <= 0L) return smoothExactPercent
 
-        // Normalize current to single-cell-equivalent capacity (in 2S, series current charges BOTH cells simultaneously)
         val dtHours = dtMs / 3_600_000f
-        val baseCurrentMa = if (absMaFloat > 20f) absMaFloat else if (isCharging) 350f else 180f
-        val equivalentSingleCellMa = if (effectiveDualCell) baseCurrentMa * 2f else baseCurrentMa
-        val deltaPct = (equivalentSingleCellMa * dtHours / effectiveFullMah) * 100f
+        val netCurrentMa = if (calibratedAbsMaFloat > 20f) calibratedAbsMaFloat else if (isCharging) 350f else 180f
+        val deltaPct = (netCurrentMa * dtHours / effectiveFullMah) * 100f
 
         val lowerBound = osPercent.toFloat()
         val upperBound = (osPercent + 0.99f).coerceAtMost(99.99f)
@@ -640,9 +626,7 @@ object PowerTelemetryEngine {
 
     /**
      * Computes remaining charge/discharge time using pack Watt-Hours (Wh = mAh/1000 * 3.85V)
-     * divided by true net pack power (W). This avoids the classic 2S Dual-Cell bug where
-     * dividing single-cell-equivalent mAh (e.g. 5000mAh) by series current (e.g. 960mA at 8.1V)
-     * mistakenly doubles the estimated time to full.
+     * divided by actual net charging wattage (W), avoiding any double-counting of the 2x multiplier.
      */
     private fun computeTimeEstimate(
         bm: BatteryManager?,
@@ -650,9 +634,8 @@ object PowerTelemetryEngine {
         exactPercent: Float,
         isCharging: Boolean,
         watts: Float,
-        absMaFloat: Float,
+        calibratedAbsMaFloat: Float,
         effectiveFullMah: Float,
-        effectiveDualCell: Boolean,
     ): Pair<String, String> {
         val packEnergyWh = (effectiveFullMah / 1000f) * NOMINAL_CELL_VOLTAGE_V
 
@@ -678,9 +661,9 @@ object PowerTelemetryEngine {
                 if (osMillis > 60_000L) {
                     (osMillis / 60_000L).toInt().coerceIn(1, 999)
                 } else {
-                    val equivMa = (if (effectiveDualCell) absMaFloat * 2f else absMaFloat).coerceAtLeast(200f)
+                    val netMa = calibratedAbsMaFloat.coerceAtLeast(200f)
                     val remainingMah = effectiveFullMah * ((100f - exactPercent).coerceAtLeast(0.5f) / 100f)
-                    ((remainingMah / equivMa) * 60f * 1.05f).roundToInt().coerceIn(1, 999)
+                    ((remainingMah / netMa) * 60f * 1.05f).roundToInt().coerceIn(1, 999)
                 }
             }
 
@@ -698,9 +681,9 @@ object PowerTelemetryEngine {
                 val remainingWh = packEnergyWh * remainingFraction
                 ((remainingWh / watts) * 60f).roundToInt().coerceIn(5, 72 * 60)
             } else {
-                val equivDrawMa = (if (effectiveDualCell) absMaFloat * 2f else absMaFloat).coerceAtLeast(160f)
+                val drawMa = calibratedAbsMaFloat.coerceAtLeast(160f)
                 val remainingMah = effectiveFullMah * remainingFraction
-                ((remainingMah / equivDrawMa) * 60f).roundToInt().coerceIn(5, 72 * 60)
+                ((remainingMah / drawMa) * 60f).roundToInt().coerceIn(5, 72 * 60)
             }
             val hours = totalMinutes / 60
             val mins = totalMinutes % 60

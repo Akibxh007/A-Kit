@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -20,6 +21,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -41,6 +45,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LinkOff
+import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.PowerSettingsNew
@@ -54,6 +59,7 @@ import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material.icons.rounded.WifiTethering
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,6 +72,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -80,11 +87,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -96,6 +105,12 @@ import com.example.ui.theme.MonoLabelStyle
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+private enum class PendingWifiPermissionAction {
+    NONE,
+    START_HOTSPOT,
+    SCAN_QR,
+}
 
 @Composable
 fun DropScreen(
@@ -110,6 +125,17 @@ fun DropScreen(
     var snippetDraft by rememberSaveable { mutableStateOf("") }
     var peerSnippetDraft by rememberSaveable { mutableStateOf("") }
     var showQrScanner by rememberSaveable { mutableStateOf(false) }
+    var pendingPermissionAction by remember { mutableStateOf(PendingWifiPermissionAction.NONE) }
+    var locationPromptForAction by remember { mutableStateOf(PendingWifiPermissionAction.NONE) }
+    val layoutDirection = LocalLayoutDirection.current
+
+    // Ensure generous bottom clearance (>=120.dp) so cards & text inputs NEVER overlap the floating nav pill
+    val effectiveContentPadding = PaddingValues(
+        start = contentPadding.calculateStartPadding(layoutDirection),
+        end = contentPadding.calculateEndPadding(layoutDirection),
+        top = contentPadding.calculateTopPadding(),
+        bottom = maxOf(contentPadding.calculateBottomPadding(), 120.dp),
+    )
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -158,15 +184,33 @@ fun DropScreen(
 
     val hotspotPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        if (grants.values.all { it }) {
-            viewModel.startOfflineHotspot()
-        } else {
-            Toast.makeText(
-                context,
-                "Nearby Wi-Fi permission is needed for 1-tap Offline Hotspot. You can still use Portable Hotspot.",
-                Toast.LENGTH_LONG,
-            ).show()
+    ) { _ ->
+        val action = pendingPermissionAction
+        pendingPermissionAction = PendingWifiPermissionAction.NONE
+        when (action) {
+            PendingWifiPermissionAction.START_HOTSPOT -> {
+                if (DropOfflineWifiManager.hasHotspotPermission(context)) {
+                    if (!DropOfflineWifiManager.isLocationEnabled(context)) {
+                        locationPromptForAction = PendingWifiPermissionAction.START_HOTSPOT
+                    } else {
+                        viewModel.startOfflineHotspot()
+                    }
+                } else {
+                    Toast.makeText(
+                        context,
+                        "Nearby Wi-Fi & Location permissions are required for Offline Hotspot. You can still use Portable Hotspot.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+            PendingWifiPermissionAction.SCAN_QR -> {
+                if (!DropOfflineWifiManager.isLocationEnabled(context)) {
+                    locationPromptForAction = PendingWifiPermissionAction.SCAN_QR
+                } else {
+                    showQrScanner = true
+                }
+            }
+            PendingWifiPermissionAction.NONE -> Unit
         }
     }
 
@@ -183,7 +227,7 @@ fun DropScreen(
         modifier = modifier
             .fillMaxSize()
             .testTag("drop_screen_list"),
-        contentPadding = contentPadding,
+        contentPadding = effectiveContentPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -410,12 +454,23 @@ fun DropScreen(
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             FilledTonalButton(
-                                onClick = { showQrScanner = true },
+                                onClick = {
+                                    if (!DropOfflineWifiManager.hasHotspotPermission(context)) {
+                                        pendingPermissionAction = PendingWifiPermissionAction.SCAN_QR
+                                        hotspotPermissionLauncher.launch(
+                                            DropOfflineWifiManager.requiredHotspotPermissions(),
+                                        )
+                                    } else if (!DropOfflineWifiManager.isLocationEnabled(context)) {
+                                        locationPromptForAction = PendingWifiPermissionAction.SCAN_QR
+                                    } else {
+                                        showQrScanner = true
+                                    }
+                                },
                                 shape = RoundedCornerShape(16.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp)
@@ -424,12 +479,15 @@ fun DropScreen(
                                 Icon(
                                     imageVector = Icons.Rounded.QrCodeScanner,
                                     contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
+                                    modifier = Modifier.size(17.dp),
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "Scan QR",
-                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                    ),
                                     maxLines = 1,
                                     softWrap = false,
                                 )
@@ -439,16 +497,19 @@ fun DropScreen(
                                 onClick = {
                                     if (state.isLocalHotspotActive) {
                                         viewModel.stopOfflineHotspot()
-                                    } else if (DropOfflineWifiManager.hasHotspotPermission(context)) {
-                                        viewModel.startOfflineHotspot()
-                                    } else {
+                                    } else if (!DropOfflineWifiManager.hasHotspotPermission(context)) {
+                                        pendingPermissionAction = PendingWifiPermissionAction.START_HOTSPOT
                                         hotspotPermissionLauncher.launch(
                                             DropOfflineWifiManager.requiredHotspotPermissions(),
                                         )
+                                    } else if (!DropOfflineWifiManager.isLocationEnabled(context)) {
+                                        locationPromptForAction = PendingWifiPermissionAction.START_HOTSPOT
+                                    } else {
+                                        viewModel.startOfflineHotspot()
                                     }
                                 },
                                 shape = RoundedCornerShape(16.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                                 border = BorderStroke(
                                     width = 1.dp,
                                     color = if (state.isLocalHotspotActive) {
@@ -470,16 +531,33 @@ fun DropScreen(
                                     } else {
                                         MaterialTheme.colorScheme.primary
                                     },
-                                    modifier = Modifier.size(18.dp),
+                                    modifier = Modifier.size(17.dp),
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = if (state.isLocalHotspotActive) "Stop Hotspot" else "Offline Hotspot",
-                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                    ),
                                     maxLines = 1,
                                     softWrap = false,
                                 )
                             }
+                        }
+
+                        // Always show copyable Offline Hotspot Credentials badge on sender screen as soon as active
+                        if (state.isLocalHotspotActive && !state.hotspotSsid.isNullOrBlank()) {
+                            HotspotCredentialsBadge(
+                                ssid = state.hotspotSsid.orEmpty(),
+                                password = state.hotspotPassword.orEmpty(),
+                                onCopySsid = {
+                                    copyToClipboard(context, "Hotspot Wi-Fi Name", state.hotspotSsid.orEmpty())
+                                },
+                                onCopyPassword = {
+                                    copyToClipboard(context, "Hotspot Password", state.hotspotPassword.orEmpty())
+                                },
+                            )
                         }
                     }
                 }
@@ -591,68 +669,6 @@ fun DropScreen(
                                         .padding(10.dp)
                                         .testTag("drop_qr_bitmap_image"),
                                 )
-                            }
-
-                            // Active Offline Hotspot Credentials Box (for PC / manual join)
-                            if (state.isLocalHotspotActive && !state.hotspotSsid.isNullOrBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)),
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "OFFLINE HOTSPOT ACTIVE (NO DATA NEEDED)",
-                                                style = MonoLabelStyle,
-                                                color = MaterialTheme.colorScheme.secondary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            Text(
-                                                text = "Wi-Fi: ${state.hotspotSsid}",
-                                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            if (!state.hotspotPassword.isNullOrBlank()) {
-                                                Text(
-                                                    text = "Pass: ${state.hotspotPassword}",
-                                                    style = MonoLabelStyle,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                )
-                                            }
-                                        }
-                                        if (!state.hotspotPassword.isNullOrBlank()) {
-                                            IconButton(
-                                                onClick = {
-                                                    copyToClipboard(
-                                                        context,
-                                                        "Hotspot Password",
-                                                        state.hotspotPassword.orEmpty(),
-                                                    )
-                                                },
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.ContentCopy,
-                                                    contentDescription = "Copy hotspot password",
-                                                    tint = MaterialTheme.colorScheme.secondary,
-                                                    modifier = Modifier.size(18.dp),
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
                             }
 
                             Surface(
@@ -941,6 +957,170 @@ fun DropScreen(
             onDismiss = { showQrScanner = false },
         )
     }
+
+    // Prompt if device GPS/Location is OFF before starting Offline Hotspot or QR auto-join
+    if (locationPromptForAction != PendingWifiPermissionAction.NONE) {
+        val action = locationPromptForAction
+        AlertDialog(
+            onDismissRequest = { locationPromptForAction = PendingWifiPermissionAction.NONE },
+            icon = {
+                Icon(
+                    imageVector = Icons.Rounded.LocationOn,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            },
+            title = {
+                Text(
+                    text = "Turn On Location for Wi-Fi Direct",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            },
+            text = {
+                Text(
+                    text = "Android requires device Location (GPS) to be turned ON to host an Offline Hotspot or auto-join a nearby hotspot via QR code. A-Kit never tracks or uploads your location.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        locationPromptForAction = PendingWifiPermissionAction.NONE
+                        runCatching {
+                            context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                        }
+                    },
+                    modifier = Modifier.testTag("drop_enable_location_button"),
+                ) {
+                    Text("Enable Location")
+                }
+            },
+            dismissButton = {
+                if (action == PendingWifiPermissionAction.SCAN_QR) {
+                    TextButton(
+                        onClick = {
+                            locationPromptForAction = PendingWifiPermissionAction.NONE
+                            showQrScanner = true
+                        },
+                    ) {
+                        Text("Scan Anyway")
+                    }
+                } else {
+                    TextButton(
+                        onClick = { locationPromptForAction = PendingWifiPermissionAction.NONE },
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun HotspotCredentialsBadge(
+    ssid: String,
+    password: String,
+    onCopySsid: () -> Unit,
+    onCopyPassword: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("drop_hotspot_credentials_badge"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = "OFFLINE HOTSPOT CREDENTIALS (TAP TO COPY)",
+                style = MonoLabelStyle,
+                color = MaterialTheme.colorScheme.secondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    onClick = onCopySsid,
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "SSID",
+                                style = MonoLabelStyle.copy(fontSize = 9.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = ssid,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Rounded.ContentCopy,
+                            contentDescription = "Copy hotspot SSID",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(15.dp),
+                        )
+                    }
+                }
+                if (password.isNotBlank()) {
+                    Surface(
+                        onClick = onCopyPassword,
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "PASSWORD",
+                                    style = MonoLabelStyle.copy(fontSize = 9.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = password,
+                                    style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Rounded.ContentCopy,
+                                contentDescription = "Copy hotspot password",
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(15.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1058,6 +1238,7 @@ private fun ConnectedPeerHubCard(
     onDisconnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val connectedGreen = Color(0xFF00E676)
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -1065,7 +1246,14 @@ private fun ConnectedPeerHubCard(
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         tonalElevation = 4.dp,
-        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)),
+        border = BorderStroke(
+            width = 1.5.dp,
+            color = if (state.isPeerConnected) {
+                connectedGreen.copy(alpha = 0.72f)
+            } else {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+            },
+        ),
     ) {
         Column(
             modifier = Modifier
@@ -1085,24 +1273,36 @@ private fun ConnectedPeerHubCard(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
+                        color = if (state.isPeerConnected) {
+                            connectedGreen.copy(alpha = 0.18f)
+                        } else {
+                            MaterialTheme.colorScheme.primaryContainer
+                        },
                     ) {
                         Box(
                             modifier = Modifier.size(40.dp),
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Smartphone,
+                                imageVector = if (state.isPeerConnected) Icons.Rounded.CheckCircle else Icons.Rounded.Smartphone,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                tint = if (state.isPeerConnected) {
+                                    connectedGreen
+                                } else {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                },
                             )
                         }
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (state.isPeerConnected) "Connected Peer (In-App)" else "Connecting to Peer...",
+                            text = if (state.isPeerConnected) {
+                                state.connectedPeerDeviceName?.let { "Connected • $it" } ?: "Connected"
+                            } else {
+                                "Connecting to Peer..."
+                            },
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = if (state.isPeerConnected) connectedGreen else MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )

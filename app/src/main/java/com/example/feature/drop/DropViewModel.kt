@@ -41,6 +41,7 @@ private data class HotspotState(
 
 private data class PeerClientState(
     val peerUrl: String? = null,
+    val peerDeviceName: String? = null,
     val wifiSsid: String? = null,
     val isConnecting: Boolean = false,
     val isConnected: Boolean = false,
@@ -108,6 +109,7 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
             snippets = snippets,
             sharedFiles = files,
             connectedPeerUrl = peer.peerUrl,
+            connectedPeerDeviceName = peer.peerDeviceName,
             connectedWifiSsid = peer.wifiSsid,
             isPeerConnecting = peer.isConnecting,
             isPeerConnected = peer.isConnected,
@@ -347,9 +349,38 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
             var activeUrl = primaryUrl
             var consecutiveFailures = 0
             while (isActive) {
-                var result = DropPeerClient.fetchState(activeUrl, boundNetwork)
+                // Always prefer explicit TRANSPORT_WIFI Network so local LAN traffic never routes over Mobile Data
+                val wifiNetwork = boundNetwork ?: DropOfflineWifiManager.findActiveWifiNetwork(getApplication())
+
+                // Step 1: Reliable /api/ping handshake when not yet connected
+                if (!peerState.value.isConnected) {
+                    var pingResult = DropPeerClient.ping(activeUrl, wifiNetwork)
+                    if (pingResult.isFailure && fallbackUrl != null && activeUrl == primaryUrl) {
+                        val altPing = DropPeerClient.ping(fallbackUrl, wifiNetwork)
+                        if (altPing.isSuccess) {
+                            activeUrl = fallbackUrl
+                            pingResult = altPing
+                        }
+                    }
+                    if (pingResult.isSuccess) {
+                        val peerDevice = pingResult.getOrNull() ?: "A-Kit Peer"
+                        consecutiveFailures = 0
+                        peerState.update {
+                            it.copy(
+                                peerUrl = activeUrl,
+                                peerDeviceName = peerDevice,
+                                isConnecting = false,
+                                isConnected = true,
+                            )
+                        }
+                        statusBanner.value = "Connected to $peerDevice ($activeUrl)"
+                    }
+                }
+
+                // Step 2: Sync live snippets & files over the same Wi-Fi network
+                var result = DropPeerClient.fetchState(activeUrl, wifiNetwork)
                 if (result.isFailure && fallbackUrl != null && activeUrl == primaryUrl) {
-                    val altResult = DropPeerClient.fetchState(fallbackUrl, boundNetwork)
+                    val altResult = DropPeerClient.fetchState(fallbackUrl, wifiNetwork)
                     if (altResult.isSuccess) {
                         activeUrl = fallbackUrl
                         peerState.update { it.copy(peerUrl = fallbackUrl) }
@@ -397,12 +428,12 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         val url = peerState.value.peerUrl ?: return
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
-        val boundNet = DropOfflineWifiManager.activeBoundNetwork
+        val wifiNet = DropOfflineWifiManager.findActiveWifiNetwork(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
-            val res = DropPeerClient.sendSnippet(url, trimmed, boundNet)
+            val res = DropPeerClient.sendSnippet(url, trimmed, wifiNet)
             if (res.isSuccess) {
                 statusBanner.value = "Snippet sent to peer."
-                DropPeerClient.fetchState(url, boundNet).getOrNull()?.let { payload ->
+                DropPeerClient.fetchState(url, wifiNet).getOrNull()?.let { payload ->
                     peerState.update { it.copy(snippets = payload.snippets, files = payload.files) }
                 }
             } else {
@@ -414,18 +445,18 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     fun uploadFilesToPeer(uris: List<Uri>) {
         val url = peerState.value.peerUrl ?: return
         if (uris.isEmpty()) return
-        val boundNet = DropOfflineWifiManager.activeBoundNetwork
+        val wifiNet = DropOfflineWifiManager.findActiveWifiNetwork(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
             statusBanner.value = "Uploading ${uris.size} item(s) to peer..."
             var successCount = 0
             uris.forEach { uri ->
-                if (DropPeerClient.uploadUri(getApplication(), url, uri, boundNet).isSuccess) {
+                if (DropPeerClient.uploadUri(getApplication(), url, uri, wifiNet).isSuccess) {
                     successCount++
                 }
             }
             if (successCount > 0) {
                 statusBanner.value = "Uploaded $successCount item(s) to peer's Downloads/A-Kit."
-                DropPeerClient.fetchState(url, boundNet).getOrNull()?.let { payload ->
+                DropPeerClient.fetchState(url, wifiNet).getOrNull()?.let { payload ->
                     peerState.update { it.copy(snippets = payload.snippets, files = payload.files) }
                 }
             } else {
@@ -436,10 +467,10 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
 
     fun downloadPeerFile(item: PeerFileItem) {
         val url = peerState.value.peerUrl ?: return
-        val boundNet = DropOfflineWifiManager.activeBoundNetwork
+        val wifiNet = DropOfflineWifiManager.findActiveWifiNetwork(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
             peerState.update { it.copy(downloadingFileId = item.id) }
-            val result = DropPeerClient.downloadFileToDownloads(getApplication(), url, item, boundNet)
+            val result = DropPeerClient.downloadFileToDownloads(getApplication(), url, item, wifiNet)
             peerState.update { it.copy(downloadingFileId = null) }
             statusBanner.value = if (result.isSuccess) {
                 "Saved \"${item.fileName}\" to Downloads/A-Kit."

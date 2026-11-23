@@ -367,8 +367,8 @@ private fun ChargingAodScreen(
                 )
                 AodTelemetryCompactCard(
                     icon = Icons.Rounded.ElectricBolt,
-                    label = if (state.effectiveDualCellActive) "VOLT 2S" else "VOLTAGE",
-                    value = String.format(Locale.US, "%.2f V", state.effectiveVoltageMv / 1000f),
+                    label = "VOLTAGE",
+                    value = String.format(Locale.US, "%.2f V", state.rawVoltageMv / 1000f),
                     accent = accent,
                     modifier = Modifier.weight(1f),
                 )

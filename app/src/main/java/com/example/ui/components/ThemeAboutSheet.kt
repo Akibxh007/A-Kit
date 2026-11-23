@@ -634,6 +634,34 @@ fun SettingsModalSheet(
                                     )
                                 }
                             }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Surface(
+                                onClick = { openExternalUrl(context, "https://akib.top") },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                                modifier = Modifier.testTag("about_developer_link"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                ) {
+                                    Text(
+                                        text = "Developed by Akib Jabed",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                        contentDescription = "Open akib.top",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(13.dp),
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = stringResource(R.string.sheet_privacy_guarantee),
                                 style = MaterialTheme.typography.bodySmall,

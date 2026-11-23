@@ -36,6 +36,37 @@ object DropPeerClient {
         return raw as HttpURLConnection
     }
 
+    /**
+     * Verifies live reachability against the sender's `GET /api/ping` endpoint over the
+     * explicit Wi-Fi [Network] and returns the peer's device display name on 200 OK.
+     */
+    fun ping(
+        baseUrl: String,
+        boundNetwork: Network? = null,
+    ): Result<String> = runCatching {
+        val cleanBase = baseUrl.trimEnd('/')
+        val conn = openConnection(URL("$cleanBase/api/ping"), boundNetwork).apply {
+            requestMethod = "GET"
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = CONNECT_TIMEOUT_MS
+            useCaches = false
+        }
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                error("Ping failed with HTTP $code")
+            }
+            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val json = JSONObject(body)
+            if (json.optString("status") != "ok") {
+                error("Unexpected ping status")
+            }
+            json.optString("device").ifBlank { "A-Kit Peer" }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     fun fetchState(
         baseUrl: String,
         boundNetwork: Network? = null,

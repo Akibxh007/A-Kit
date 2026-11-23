@@ -108,12 +108,12 @@ fun PowerDiagnosticsSheet(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Dual-Cell Battery Mode (2S)",
+                            text = "Dual-Cell / Charge-Pump (2×)",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            text = "Doubles cell voltage and wattage math for dual-cell fast-charging hardware (e.g. 65W–120W phones).",
+                            text = "Applies 2× calibration to charging current and wattage for fast-charging hardware while keeping displayed voltage as single-cell.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -183,6 +183,20 @@ class DropServerService : Service() {
                         )
                     }
 
+                    method == "GET" && rawPath == "/api/ping" -> {
+                        val safeDevice = resolveDeviceDisplayName()
+                            .replace("\\", "\\\\")
+                            .replace("\"", "\\\"")
+                        val json = """{"status":"ok","device":"$safeDevice"}"""
+                        writeSimpleResponse(
+                            output,
+                            200,
+                            "OK",
+                            "application/json; charset=utf-8",
+                            json.toByteArray(Charsets.UTF_8),
+                        )
+                    }
+
                     method == "GET" && rawPath == "/api/state" -> {
                         val json = DropHubCoordinator.serializePortalStateJson()
                         writeSimpleResponse(
