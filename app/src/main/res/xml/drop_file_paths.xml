@@ -3,6 +3,9 @@
     <external-files-path
         name="akit_drop_downloads"
         path="Download/A-Kit/" />
+    <files-path
+        name="akit_drop_internal"
+        path="A-Kit/" />
     <cache-path
         name="akit_drop_cache"
         path="." />

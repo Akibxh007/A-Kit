@@ -3,6 +3,7 @@ package com.example.feature.drop
 import android.content.Context
 import android.net.Network
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -161,13 +162,15 @@ object DropPeerClient {
 
     /**
      * Streams any file (300MB–2GB+) directly from ContentResolver disk stream to the peer's
-     * HTTP socket in 64KB chunks with zero RAM buffering and infinite active stream timeout.
+     * HTTP socket in 64KB chunks with zero RAM buffering, infinite active stream timeout,
+     * and ~150ms live progress updates.
      */
     fun uploadUri(
         context: Context,
         baseUrl: String,
         uri: Uri,
         boundNetwork: Network? = null,
+        onProgress: (DropTransferProgress) -> Unit = {},
     ): Result<String> = runCatching {
         val resolver = context.contentResolver
         var displayName = "Drop_${System.currentTimeMillis()}"
@@ -189,7 +192,17 @@ object DropPeerClient {
                 resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
             }.getOrDefault(-1L)
         }
-        val mimeType = resolver.getType(uri) ?: "application/octet-stream"
+        val mimeType = DropHubCoordinator.resolveProperMimeType(displayName, resolver.getType(uri))
+
+        onProgress(
+            DropTransferProgress(
+                fileName = displayName,
+                isSending = true,
+                bytesTransferred = 0L,
+                totalBytes = sizeBytes,
+                speedBytesPerSec = 0f,
+            ),
+        )
 
         val cleanBase = baseUrl.trimEnd('/')
         val conn = openConnection(URL("$cleanBase/api/upload"), boundNetwork).apply {
@@ -208,12 +221,49 @@ object DropPeerClient {
             setRequestProperty("Content-Type", "application/octet-stream")
         }
         try {
+            val buffer = ByteArray(STREAM_BUFFER_SIZE)
+            var totalSent = 0L
+            val startTimeMs = SystemClock.elapsedRealtime()
+            var lastEmitTimeMs = startTimeMs
+
             conn.outputStream.use { out ->
                 resolver.openInputStream(uri)?.use { input ->
-                    input.copyTo(out, bufferSize = STREAM_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        out.write(buffer, 0, read)
+                        totalSent += read.toLong()
+
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastEmitTimeMs >= DropHubCoordinator.PROGRESS_EMIT_INTERVAL_MS) {
+                            val elapsedSec = ((now - startTimeMs).coerceAtLeast(1L)) / 1000f
+                            onProgress(
+                                DropTransferProgress(
+                                    fileName = displayName,
+                                    isSending = true,
+                                    bytesTransferred = totalSent,
+                                    totalBytes = sizeBytes,
+                                    speedBytesPerSec = totalSent / elapsedSec,
+                                ),
+                            )
+                            lastEmitTimeMs = now
+                        }
+                    }
                 } ?: error("Cannot open file stream")
                 out.flush()
             }
+
+            val totalElapsedSec = ((SystemClock.elapsedRealtime() - startTimeMs).coerceAtLeast(1L)) / 1000f
+            onProgress(
+                DropTransferProgress(
+                    fileName = displayName,
+                    isSending = true,
+                    bytesTransferred = totalSent,
+                    totalBytes = if (sizeBytes > 0L) sizeBytes else totalSent,
+                    speedBytesPerSec = totalSent / totalElapsedSec,
+                ),
+            )
+
             val code = conn.responseCode
             if (code !in 200..299) {
                 error("Upload failed (HTTP $code)")
@@ -226,13 +276,14 @@ object DropPeerClient {
 
     /**
      * Streams a peer file (300MB–2GB+) directly from socket to a temporary staged file in
-     * `Downloads/A-Kit` using 64KB chunks with infinite read timeout during active transfer.
+     * `Downloads/A-Kit` using 64KB chunks with infinite read timeout and ~150ms progress updates.
      */
     fun downloadFileToDownloads(
         context: Context,
         baseUrl: String,
         item: PeerFileItem,
         boundNetwork: Network? = null,
+        onProgress: (DropTransferProgress) -> Unit = {},
     ): Result<DropFileItem> = runCatching {
         val cleanBase = baseUrl.trimEnd('/')
         val encodedId = URLEncoder.encode(item.id, "UTF-8")
@@ -256,6 +307,18 @@ object DropPeerClient {
                 mimeType = item.mimeType,
                 inputStream = stream,
                 expectedBytes = expectedBytes,
+                registerInHostHub = false,
+                onProgress = { transferred, total, speedBps ->
+                    onProgress(
+                        DropTransferProgress(
+                            fileName = item.fileName,
+                            isSending = false,
+                            bytesTransferred = transferred,
+                            totalBytes = total,
+                            speedBytesPerSec = speedBps,
+                        ),
+                    )
+                },
             ) ?: error("Could not save file to Downloads/A-Kit")
             saved
         } finally {

@@ -4,7 +4,6 @@ import android.net.Uri
 import androidx.compose.runtime.Immutable
 import java.net.Inet4Address
 import java.net.NetworkInterface
-import java.net.URLEncoder
 import java.util.Locale
 
 enum class DropDirection {
@@ -31,19 +30,62 @@ data class DropFileItem(
     val savedLocationLabel: String,
     val direction: DropDirection,
     val timestampMs: Long,
+    val localFilePath: String? = null,
+    val isSavedToDownloads: Boolean = false,
 ) {
     val isImage: Boolean
         get() = mimeType.startsWith("image/", ignoreCase = true)
 
-    fun formatSize(): String {
-        val kb = sizeBytes / 1024.0
-        val mb = kb / 1024.0
-        return when {
-            sizeBytes <= 0L -> "—"
-            kb < 1024.0 -> String.format(Locale.US, "%.1f KB", kb)
-            mb < 1024.0 -> String.format(Locale.US, "%.2f MB", mb)
-            else -> String.format(Locale.US, "%.2f GB", mb / 1024.0)
+    fun formatSize(): String = formatTransferBytes(sizeBytes)
+}
+
+@Immutable
+data class DropTransferProgress(
+    val fileName: String,
+    val isSending: Boolean,
+    val bytesTransferred: Long,
+    val totalBytes: Long,
+    val speedBytesPerSec: Float,
+) {
+    val progressFraction: Float?
+        get() = if (totalBytes > 0L) {
+            (bytesTransferred.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+        } else {
+            null
         }
+
+    val percentInt: Int?
+        get() = progressFraction?.let { (it * 100f).toInt().coerceIn(0, 100) }
+
+    fun formatTransferredSummary(): String {
+        val sentStr = formatTransferBytes(bytesTransferred)
+        return if (totalBytes > 0L) {
+            "$sentStr / ${formatTransferBytes(totalBytes)}"
+        } else {
+            sentStr
+        }
+    }
+
+    fun formatSpeed(): String {
+        val mbPerSec = speedBytesPerSec / (1024f * 1024f)
+        val kbPerSec = speedBytesPerSec / 1024f
+        return when {
+            speedBytesPerSec <= 0f -> "—"
+            mbPerSec >= 1f -> String.format(Locale.US, "%.1f MB/s", mbPerSec)
+            else -> String.format(Locale.US, "%.0f KB/s", kbPerSec)
+        }
+    }
+}
+
+fun formatTransferBytes(bytes: Long): String {
+    val kb = bytes / 1024.0
+    val mb = kb / 1024.0
+    return when {
+        bytes <= 0L -> "0 B"
+        bytes < 1024L -> "$bytes B"
+        kb < 1024.0 -> String.format(Locale.US, "%.1f KB", kb)
+        mb < 1024.0 -> String.format(Locale.US, "%.1f MB", mb)
+        else -> String.format(Locale.US, "%.2f GB", mb / 1024.0)
     }
 }
 
@@ -91,6 +133,10 @@ data class DropUiState(
     val peerSnippets: List<DropSnippet> = emptyList(),
     val peerFiles: List<PeerFileItem> = emptyList(),
     val downloadingPeerFileId: String? = null,
+    val downloadedPeerFiles: Map<String, DropFileItem> = emptyMap(),
+    val activePeerTransfer: DropTransferProgress? = null,
+    val activeHostTransfer: DropTransferProgress? = null,
+    val savingHostFileId: String? = null,
     val fallbackWifiSsid: String? = null,
     val fallbackWifiPassword: String? = null,
     val showWifiFallbackAction: Boolean = false,
@@ -121,8 +167,9 @@ data class DropUiState(
 object DropUrlParser {
 
     /**
-     * Builds an A-Kit offline auto-connect QR payload that embeds both the local HTTP Drop URL
-     * and the active Local-Only Hotspot SSID/password for 1-tap receiver connection.
+     * Builds an A-Kit offline auto-connect QR payload using [Uri.Builder] so the full,
+     * untruncated Local-Only Hotspot SSID and 15+ character WPA2 passphrase round-trip
+     * losslessly with [Uri.parse] / `getQueryParameter`.
      */
     fun buildOfflineQrPayload(
         serverUrl: String,
@@ -130,15 +177,19 @@ object DropUrlParser {
         hotspotPassword: String?,
     ): String {
         if (hotspotSsid.isNullOrBlank()) return serverUrl
-        val encodedUrl = URLEncoder.encode(serverUrl, "UTF-8")
-        val encodedSsid = URLEncoder.encode(hotspotSsid, "UTF-8")
-        val encodedPass = URLEncoder.encode(hotspotPassword.orEmpty(), "UTF-8")
-        return "akit://drop?url=$encodedUrl&ssid=$encodedSsid&pass=$encodedPass"
+        return Uri.Builder()
+            .scheme("akit")
+            .authority("drop")
+            .appendQueryParameter("url", serverUrl)
+            .appendQueryParameter("ssid", hotspotSsid)
+            .appendQueryParameter("pass", hotspotPassword.orEmpty())
+            .build()
+            .toString()
     }
 
     /**
      * Parses any supported QR payload into a structured [DropQrPayload]:
-     * 1. `akit://drop?url=http%3A%2F%2F192.168.43.1%3A8080&ssid=AndroidShare_1234&pass=abcd1234`
+     * 1. `akit://drop?url=http%3A%2F%2F192.168.43.1%3A8080&ssid=AndroidShare_1234&pass=full_untruncated_pass`
      * 2. Standard `WIFI:T:WPA;S:MyHotspot;P:secret123;;` (optionally with `U:http://...` or newline URL)
      * 3. Plain `http://192.168.1.5:8080` or `192.168.1.5:8080`
      */
@@ -150,7 +201,7 @@ object DropUrlParser {
         if (trimmed.startsWith("akit://", ignoreCase = true)) {
             val parsed = runCatching { Uri.parse(trimmed) }.getOrNull() ?: return null
             val ssid = parsed.getQueryParameter("ssid")?.takeIf { it.isNotBlank() }
-            val pass = parsed.getQueryParameter("pass")?.takeIf { it.isNotBlank() }
+            val pass = parsed.getQueryParameter("pass")?.takeIf { it.isNotEmpty() }
             val url = normalizeDropTargetUrl(trimmed)
             if (url != null || ssid != null) {
                 return DropQrPayload(

@@ -12,6 +12,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -67,6 +69,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -94,6 +97,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -102,6 +106,7 @@ import com.example.R
 import com.example.ui.components.ModuleHeroCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.theme.MonoLabelStyle
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -129,13 +134,20 @@ fun DropScreen(
     var locationPromptForAction by remember { mutableStateOf(PendingWifiPermissionAction.NONE) }
     val layoutDirection = LocalLayoutDirection.current
 
-    // Ensure generous bottom clearance (>=120.dp) so cards & text inputs NEVER overlap the floating nav pill
+    // Ensure generous bottom clearance (>=160.dp) so QR cards & received files NEVER overlap the floating nav pill
     val effectiveContentPadding = PaddingValues(
         start = contentPadding.calculateStartPadding(layoutDirection),
         end = contentPadding.calculateEndPadding(layoutDirection),
         top = contentPadding.calculateTopPadding(),
-        bottom = maxOf(contentPadding.calculateBottomPadding(), 120.dp),
+        bottom = maxOf(contentPadding.calculateBottomPadding(), 160.dp),
     )
+
+    val receivedHostPeerFiles = remember(state.sharedFiles) {
+        state.sharedFiles.filter { it.direction == DropDirection.FROM_BROWSER }
+    }
+    val stagedPhoneFiles = remember(state.sharedFiles) {
+        state.sharedFiles.filter { it.direction == DropDirection.FROM_PHONE }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -323,6 +335,7 @@ fun DropScreen(
                     onUploadFiles = { peerFileUploadLauncher.launch(arrayOf("*/*")) },
                     onCopySnippet = { copyToClipboard(context, "Peer Snippet", it) },
                     onDownloadFile = viewModel::downloadPeerFile,
+                    onOpenDownloadedFile = { openFileUri(context, it) },
                     onDisconnect = viewModel::disconnectPeer,
                     modifier = Modifier.widthIn(max = 640.dp),
                 )
@@ -787,7 +800,33 @@ fun DropScreen(
             }
         }
 
-        // 2B. Beginner-Friendly Offline Hotspot / PC Mode Helper Tip Card
+        // 2A. Live Host Transfer Progress Card (visible while Host is sending or receiving a file)
+        val activeHostTransfer = state.activeHostTransfer
+        if (activeHostTransfer != null) {
+            item(key = "drop_host_live_transfer_card") {
+                LiveTransferProgressCard(
+                    progress = activeHostTransfer,
+                    modifier = Modifier
+                        .widthIn(max = 640.dp)
+                        .testTag("drop_host_transfer_progress_card"),
+                )
+            }
+        }
+
+        // 2B. Unified Host PEER FILES Card (received peer uploads with explicit Open & Save buttons)
+        if (receivedHostPeerFiles.isNotEmpty()) {
+            item(key = "drop_host_peer_files_card") {
+                HostPeerFilesCard(
+                    files = receivedHostPeerFiles,
+                    savingFileId = state.savingHostFileId,
+                    onOpenFile = { openFileUri(context, it) },
+                    onSaveFile = viewModel::saveHostReceivedFile,
+                    modifier = Modifier.widthIn(max = 640.dp),
+                )
+            }
+        }
+
+        // 2C. Beginner-Friendly Offline Hotspot / PC Mode Helper Tip Card
         item(key = "drop_offline_hotspot_guide") {
             OfflineHotspotPcGuideCard(
                 displayedUrl = state.serverUrl ?: "http://192.168.x.x:${state.serverPort}",
@@ -891,12 +930,12 @@ fun DropScreen(
             }
         }
 
-        // 4. Shared Media & Files Section
+        // 4. Shared Media & Files Section (files staged from this phone)
         item(key = "drop_files_header") {
             Spacer(modifier = Modifier.height(2.dp))
             SectionHeader(
                 title = "Shared Media & Files",
-                badgeText = "${state.sharedFiles.size} ITEMS",
+                badgeText = "${stagedPhoneFiles.size} ITEMS",
                 modifier = Modifier.widthIn(max = 640.dp),
             )
         }
@@ -958,7 +997,7 @@ fun DropScreen(
             }
         }
 
-        if (state.sharedFiles.isEmpty()) {
+        if (stagedPhoneFiles.isEmpty()) {
             item(key = "drop_files_empty") {
                 Surface(
                     shape = RoundedCornerShape(24.dp),
@@ -977,12 +1016,12 @@ fun DropScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Text(
-                            text = "No Files Shared Yet",
+                            text = "No Files Staged From This Phone",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            text = "Pick photos or files above to serve them to nearby browsers, or upload from any peer directly into Downloads/A-Kit.",
+                            text = "Pick photos or files above to serve them to nearby peers, or receive peer uploads in the PEER FILES card above.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -990,7 +1029,7 @@ fun DropScreen(
                 }
             }
         } else {
-            items(items = state.sharedFiles, key = { it.id }) { fileItem ->
+            items(items = stagedPhoneFiles, key = { it.id }) { fileItem ->
                 DropFileCard(
                     fileItem = fileItem,
                     onOpen = { openFileUri(context, fileItem) },
@@ -1091,7 +1130,7 @@ private fun HotspotCredentialsBadge(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
                 text = "OFFLINE HOTSPOT CREDENTIALS (TAP TO COPY)",
@@ -1100,75 +1139,406 @@ private fun HotspotCredentialsBadge(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+
+            // Full-width SSID row so long AndroidShare_xxxx names are never clipped
+            Surface(
+                onClick = onCopySsid,
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("drop_hotspot_ssid_copy_row"),
             ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "WI-FI NAME (SSID)",
+                            style = MonoLabelStyle.copy(fontSize = 9.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = ssid,
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Icon(
+                        imageVector = Icons.Rounded.ContentCopy,
+                        contentDescription = "Copy hotspot SSID",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+            }
+
+            // Full-width PASSWORD row so complete 15+ char passphrases display untruncated
+            if (password.isNotBlank()) {
                 Surface(
-                    onClick = onCopySsid,
-                    shape = RoundedCornerShape(10.dp),
+                    onClick = onCopyPassword,
+                    shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("drop_hotspot_password_copy_row"),
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "SSID",
+                                text = "FULL PASSWORD (${password.length} CHARS)",
                                 style = MonoLabelStyle.copy(fontSize = 9.sp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                text = ssid,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                                text = password,
+                                style = MonoLabelStyle.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    letterSpacing = 0.6.sp,
+                                ),
+                                color = Color(0xFF00E5FF),
                             )
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
                         Icon(
                             imageVector = Icons.Rounded.ContentCopy,
-                            contentDescription = "Copy hotspot SSID",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(15.dp),
+                            contentDescription = "Copy full hotspot password",
+                            tint = Color(0xFF00E5FF),
+                            modifier = Modifier.size(17.dp),
                         )
                     }
                 }
-                if (password.isNotBlank()) {
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveTransferProgressCard(
+    progress: DropTransferProgress,
+    modifier: Modifier = Modifier,
+) {
+    val electricCyan = Color(0xFF00E5FF)
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress.progressFraction ?: 0f,
+        animationSpec = tween(durationMillis = 140),
+        label = "drop_transfer_progress_anim",
+    )
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 4.dp,
+        border = BorderStroke(1.2.dp, electricCyan.copy(alpha = 0.6f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
                     Surface(
-                        onClick = onCopyPassword,
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier.weight(1f),
+                        shape = CircleShape,
+                        color = electricCyan.copy(alpha = 0.16f),
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
+                            Icon(
+                                imageVector = if (progress.isSending) Icons.Rounded.UploadFile else Icons.Rounded.Download,
+                                contentDescription = null,
+                                tint = electricCyan,
+                                modifier = Modifier.size(13.dp),
+                            )
+                            Text(
+                                text = if (progress.isSending) "SENDING" else "RECEIVING",
+                                style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                color = electricCyan,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                    Text(
+                        text = progress.fileName,
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = progress.percentInt?.let { "$it%" } ?: "LIVE",
+                    style = MonoLabelStyle.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                    ),
+                    color = electricCyan,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+
+            if (progress.progressFraction != null) {
+                LinearProgressIndicator(
+                    progress = { animatedProgress },
+                    color = electricCyan,
+                    trackColor = electricCyan.copy(alpha = 0.16f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(7.dp)
+                        .clip(CircleShape),
+                )
+            } else {
+                LinearProgressIndicator(
+                    color = electricCyan,
+                    trackColor = electricCyan.copy(alpha = 0.16f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(7.dp)
+                        .clip(CircleShape),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = progress.formatTransferredSummary(),
+                    style = MonoLabelStyle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = progress.formatSpeed(),
+                    style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold),
+                    color = electricCyan,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HostPeerFilesCard(
+    files: List<DropFileItem>,
+    savingFileId: String?,
+    onOpenFile: (DropFileItem) -> Unit,
+    onSaveFile: (DropFileItem) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val savedGreen = Color(0xFF00E676)
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("drop_host_peer_files_card"),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = 3.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "PEER FILES (${files.size})",
+                    style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "RECEIVED ON HOST",
+                    style = MonoLabelStyle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            files.forEach { fileItem ->
+                val isSaving = savingFileId == fileItem.id
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("drop_host_received_file_${fileItem.id}"),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = if (fileItem.isImage) Icons.Rounded.Image else Icons.Rounded.Description,
+                                    contentDescription = fileItem.fileName,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "PASSWORD",
-                                    style = MonoLabelStyle.copy(fontSize = 9.sp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = password,
-                                    style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold),
+                                    text = fileItem.fileName,
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                                     color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
+                                Text(
+                                    text = "${fileItem.formatSize()} • ${fileItem.savedLocationLabel}",
+                                    style = MonoLabelStyle,
+                                    color = if (fileItem.isSavedToDownloads) savedGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
-                            Icon(
-                                imageVector = Icons.Rounded.ContentCopy,
-                                contentDescription = "Copy hotspot password",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(15.dp),
-                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FilledTonalButton(
+                                onClick = { onOpenFile(fileItem) },
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(40.dp)
+                                    .testTag("drop_host_open_file_${fileItem.id}"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Open",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+
+                            if (fileItem.isSavedToDownloads) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = savedGreen.copy(alpha = 0.16f),
+                                    border = BorderStroke(1.dp, savedGreen.copy(alpha = 0.55f)),
+                                    modifier = Modifier
+                                        .weight(1.4f)
+                                        .height(40.dp)
+                                        .testTag("drop_host_saved_badge_${fileItem.id}"),
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(horizontal = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.CheckCircle,
+                                            contentDescription = null,
+                                            tint = savedGreen,
+                                            modifier = Modifier.size(15.dp),
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text(
+                                            text = "Saved to Downloads/A-Kit",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = savedGreen,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            } else {
+                                Button(
+                                    onClick = { onSaveFile(fileItem) },
+                                    enabled = !isSaving,
+                                    shape = RoundedCornerShape(12.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(40.dp)
+                                        .testTag("drop_host_save_file_${fileItem.id}"),
+                                ) {
+                                    if (isSaving) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Download,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Save",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                            maxLines = 1,
+                                            softWrap = false,
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1289,6 +1659,7 @@ private fun ConnectedPeerHubCard(
     onUploadFiles: () -> Unit,
     onCopySnippet: (String) -> Unit,
     onDownloadFile: (PeerFileItem) -> Unit,
+    onOpenDownloadedFile: (DropFileItem) -> Unit,
     onDisconnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1391,7 +1762,7 @@ private fun ConnectedPeerHubCard(
                 }
             }
 
-            if (!state.isPeerConnected && state.showWifiFallbackAction && !state.fallbackWifiSsid.isNullOrBlank()) {
+            if (!state.isPeerConnected && !state.fallbackWifiSsid.isNullOrBlank()) {
                 val peerCtx = LocalContext.current
                 FilledTonalButton(
                     onClick = {
@@ -1402,7 +1773,9 @@ private fun ConnectedPeerHubCard(
                         )
                     },
                     shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("drop_peer_wifi_fallback_button"),
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Wifi,
@@ -1417,6 +1790,14 @@ private fun ConnectedPeerHubCard(
                         softWrap = false,
                     )
                 }
+            }
+
+            // Dynamic Live Transfer Progress Bar inside Peer Hub (Sending & Receiving)
+            if (state.activePeerTransfer != null) {
+                LiveTransferProgressCard(
+                    progress = state.activePeerTransfer,
+                    modifier = Modifier.testTag("drop_peer_transfer_progress_card"),
+                )
             }
 
             // Send quick text to peer
@@ -1529,7 +1910,7 @@ private fun ConnectedPeerHubCard(
                 }
             }
 
-            // Remote Peer Files (1-tap Save to Downloads/A-Kit)
+            // Remote Peer Files (1-tap Save to Downloads/A-Kit + Open once saved)
             if (state.peerFiles.isNotEmpty()) {
                 Text(
                     text = "PEER FILES (${state.peerFiles.size})",
@@ -1538,54 +1919,79 @@ private fun ConnectedPeerHubCard(
                 )
                 state.peerFiles.take(8).forEach { pf ->
                     val isDownloading = state.downloadingPeerFileId == pf.id
+                    val downloadedItem = state.downloadedPeerFiles[pf.id]
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceContainer,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = pf.fileName,
-                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = "${pf.sizeLabel} • ${pf.sourceLabel}",
-                                    style = MonoLabelStyle,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            if (isDownloading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(22.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                            } else {
-                                FilledTonalButton(
-                                    onClick = { onDownloadFile(pf) },
-                                    shape = CircleShape,
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                    modifier = Modifier.height(36.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Download,
-                                        contentDescription = "Download file",
-                                        modifier = Modifier.size(16.dp),
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = pf.fileName,
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Save", maxLines = 1, softWrap = false)
+                                    Text(
+                                        text = if (downloadedItem != null) {
+                                            "${pf.sizeLabel} • Saved to Downloads/A-Kit"
+                                        } else {
+                                            "${pf.sizeLabel} • ${pf.sourceLabel}"
+                                        },
+                                        style = MonoLabelStyle,
+                                        color = if (downloadedItem != null) connectedGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                if (isDownloading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                } else if (downloadedItem != null) {
+                                    FilledTonalButton(
+                                        onClick = { onOpenDownloadedFile(downloadedItem) },
+                                        shape = CircleShape,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        modifier = Modifier.height(36.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.OpenInNew,
+                                            contentDescription = "Open downloaded file",
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Open", maxLines = 1, softWrap = false)
+                                    }
+                                } else {
+                                    FilledTonalButton(
+                                        onClick = { onDownloadFile(pf) },
+                                        shape = CircleShape,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        modifier = Modifier.height(36.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Download,
+                                            contentDescription = "Download file",
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Save", maxLines = 1, softWrap = false)
+                                    }
                                 }
                             }
                         }
@@ -1810,22 +2216,56 @@ private fun sharePlainText(context: Context, text: String) {
 }
 
 private fun openFileUri(context: Context, item: DropFileItem) {
-    val uri = runCatching { Uri.parse(item.uriString) }.getOrNull() ?: return
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, item.mimeType)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching { context.startActivity(Intent.createChooser(intent, "Open ${item.fileName}")) }
-        .onFailure {
-            Toast.makeText(context, "No app available to open this file type", Toast.LENGTH_SHORT).show()
+    val resolvedUri = item.localFilePath
+        ?.let { File(it) }
+        ?.takeIf { it.exists() && it.canRead() }
+        ?.let { file ->
+            runCatching {
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.drop.fileprovider",
+                    file,
+                )
+            }.getOrNull()
         }
+        ?: runCatching { Uri.parse(item.uriString) }.getOrNull()
+        ?: return
+
+    val resolvedMime = DropHubCoordinator.resolveProperMimeType(item.fileName, item.mimeType)
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(resolvedUri, resolvedMime)
+        clipData = ClipData.newRawUri(item.fileName, resolvedUri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(intent, "Open ${item.fileName}"))
+    }.onFailure {
+        Toast.makeText(context, "No app available to open this file type", Toast.LENGTH_SHORT).show()
+    }
 }
 
 private fun shareFileUri(context: Context, item: DropFileItem) {
-    val uri = runCatching { Uri.parse(item.uriString) }.getOrNull() ?: return
+    val resolvedUri = item.localFilePath
+        ?.let { File(it) }
+        ?.takeIf { it.exists() && it.canRead() }
+        ?.let { file ->
+            runCatching {
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.drop.fileprovider",
+                    file,
+                )
+            }.getOrNull()
+        }
+        ?: runCatching { Uri.parse(item.uriString) }.getOrNull()
+        ?: return
+
+    val resolvedMime = DropHubCoordinator.resolveProperMimeType(item.fileName, item.mimeType)
     val intent = Intent(Intent.ACTION_SEND).apply {
-        type = item.mimeType
-        putExtra(Intent.EXTRA_STREAM, uri)
+        type = resolvedMime
+        putExtra(Intent.EXTRA_STREAM, resolvedUri)
+        clipData = ClipData.newRawUri(item.fileName, resolvedUri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching { context.startActivity(Intent.createChooser(intent, "Share ${item.fileName}")) }

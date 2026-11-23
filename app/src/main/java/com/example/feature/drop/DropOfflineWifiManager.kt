@@ -298,11 +298,11 @@ object DropOfflineWifiManager {
             val softAp = reservation.softApConfiguration
             val ssid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 softAp.wifiSsid?.bytes?.toString(Charsets.UTF_8)
-                    ?.trim('"')
+                    ?.removeSurrounding("\"")
                     ?.takeIf { it.isNotBlank() }
-                    ?: @Suppress("DEPRECATION") softAp.ssid.orEmpty()
+                    ?: @Suppress("DEPRECATION") softAp.ssid?.removeSurrounding("\"").orEmpty()
             } else {
-                @Suppress("DEPRECATION") softAp.ssid.orEmpty()
+                @Suppress("DEPRECATION") softAp.ssid?.removeSurrounding("\"").orEmpty()
             }
             val passphrase = softAp.passphrase.orEmpty()
             if (ssid.isNotBlank()) {
@@ -311,8 +311,8 @@ object DropOfflineWifiManager {
         }
         @Suppress("DEPRECATION")
         val legacyConfig = reservation.wifiConfiguration
-        val legacySsid = legacyConfig?.SSID?.trim('"').orEmpty().ifBlank { "A-Kit_Hotspot" }
-        val legacyPass = legacyConfig?.preSharedKey?.trim('"').orEmpty()
+        val legacySsid = legacyConfig?.SSID?.removeSurrounding("\"").orEmpty().ifBlank { "A-Kit_Hotspot" }
+        val legacyPass = legacyConfig?.preSharedKey?.removeSurrounding("\"").orEmpty()
         return legacySsid to legacyPass
     }
 }

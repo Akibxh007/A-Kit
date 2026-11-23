@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.example.MainActivity
@@ -272,9 +273,10 @@ class DropServerService : Service() {
                                 boundary = boundary,
                                 fallbackFileName = fileName,
                                 fallbackMimeType = mimeType,
+                                expectedBytes = expectedBytes,
                             )
                         } else {
-                            DropHubCoordinator.saveUploadedStreamToDownloads(
+                            DropHubCoordinator.saveIncomingHostUpload(
                                 context = applicationContext,
                                 rawFileName = fileName,
                                 mimeType = mimeType,
@@ -341,6 +343,7 @@ class DropServerService : Service() {
         boundary: String,
         fallbackFileName: String,
         fallbackMimeType: String,
+        expectedBytes: Long,
     ): DropFileItem? {
         val buffered = BufferedInputStream(bodyStream, STREAM_BUFFER_SIZE)
         val startBoundary = "--$boundary"
@@ -371,12 +374,12 @@ class DropServerService : Service() {
 
         val boundaryMarker = "\r\n--$boundary".toByteArray(Charsets.ISO_8859_1)
         val partStream = MultipartBoundaryInputStream(buffered, boundaryMarker)
-        return DropHubCoordinator.saveUploadedStreamToDownloads(
+        return DropHubCoordinator.saveIncomingHostUpload(
             context = applicationContext,
             rawFileName = partFileName,
             mimeType = partMimeType,
             inputStream = partStream,
-            expectedBytes = -1L,
+            expectedBytes = if (expectedBytes > 0L) -1L else expectedBytes,
         )
     }
 
@@ -401,47 +404,70 @@ class DropServerService : Service() {
 
         val safeDispositionName = item.fileName.replace("\"", "_")
         val resolvedSize = DropHubCoordinator.resolveFileSizeBytes(applicationContext, item)
-        stream.use { input ->
-            val headerBuilder = StringBuilder()
-                .append("HTTP/1.1 200 OK\r\n")
-                .append("Content-Type: ${item.mimeType}\r\n")
-                .append("Content-Disposition: inline; filename=\"$safeDispositionName\"\r\n")
-            if (resolvedSize > 0L) {
-                headerBuilder.append("Content-Length: $resolvedSize\r\n")
-            }
-            headerBuilder
-                .append("Cache-Control: no-store\r\n")
-                .append("Connection: close\r\n\r\n")
-
-            output.write(headerBuilder.toString().toByteArray(Charsets.ISO_8859_1))
-            output.flush()
-
-            // Direct 64KB disk-to-socket streaming with zero in-memory buffering
-            val trackedInput = object : InputStream() {
-                private var sinceTouch = 0L
-                override fun read(): Int {
-                    val b = input.read()
-                    if (b >= 0) maybeTouch(1L)
-                    return b
+        DropHubCoordinator.updateHostTransfer(
+            DropTransferProgress(
+                fileName = item.fileName,
+                isSending = true,
+                bytesTransferred = 0L,
+                totalBytes = resolvedSize,
+                speedBytesPerSec = 0f,
+            ),
+        )
+        try {
+            stream.use { input ->
+                val headerBuilder = StringBuilder()
+                    .append("HTTP/1.1 200 OK\r\n")
+                    .append("Content-Type: ${item.mimeType}\r\n")
+                    .append("Content-Disposition: inline; filename=\"$safeDispositionName\"\r\n")
+                if (resolvedSize > 0L) {
+                    headerBuilder.append("Content-Length: $resolvedSize\r\n")
                 }
+                headerBuilder
+                    .append("Cache-Control: no-store\r\n")
+                    .append("Connection: close\r\n\r\n")
 
-                override fun read(b: ByteArray, off: Int, len: Int): Int {
-                    val r = input.read(b, off, len)
-                    if (r > 0) maybeTouch(r.toLong())
-                    return r
-                }
+                output.write(headerBuilder.toString().toByteArray(Charsets.ISO_8859_1))
+                output.flush()
 
-                private fun maybeTouch(delta: Long) {
-                    sinceTouch += delta
+                // Direct 64KB disk-to-socket streaming with ~150ms live progress updates
+                val buffer = ByteArray(STREAM_BUFFER_SIZE)
+                var totalSent = 0L
+                var sinceTouch = 0L
+                val startTimeMs = SystemClock.elapsedRealtime()
+                var lastEmitTimeMs = startTimeMs
+
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    output.write(buffer, 0, read)
+                    totalSent += read.toLong()
+                    sinceTouch += read.toLong()
+
                     if (sinceTouch >= 4L * 1024L * 1024L) {
                         sinceTouch = 0L
                         DropHubCoordinator.touchActivity()
                     }
+
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastEmitTimeMs >= DropHubCoordinator.PROGRESS_EMIT_INTERVAL_MS) {
+                        val elapsedSec = ((now - startTimeMs).coerceAtLeast(1L)) / 1000f
+                        DropHubCoordinator.updateHostTransfer(
+                            DropTransferProgress(
+                                fileName = item.fileName,
+                                isSending = true,
+                                bytesTransferred = totalSent,
+                                totalBytes = resolvedSize,
+                                speedBytesPerSec = totalSent / elapsedSec,
+                            ),
+                        )
+                        lastEmitTimeMs = now
+                    }
                 }
+                output.flush()
+                DropHubCoordinator.touchActivity()
             }
-            trackedInput.copyTo(output, bufferSize = STREAM_BUFFER_SIZE)
-            output.flush()
-            DropHubCoordinator.touchActivity()
+        } finally {
+            DropHubCoordinator.clearHostTransfer()
         }
     }
 
