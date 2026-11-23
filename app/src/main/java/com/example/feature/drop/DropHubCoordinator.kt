@@ -17,6 +17,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -26,8 +27,13 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Shared thread-safe session hub synchronizing the embedded HTTP ServerSocket service
  * with the native Android Drop UI in real time.
+ *
+ * All file transfers stream directly disk-to-socket / socket-to-disk in 64KB chunks
+ * (`STREAM_BUFFER_SIZE = 65_536`) with zero in-memory file buffering, supporting 300MB–2GB+ files.
  */
 object DropHubCoordinator {
+
+    const val STREAM_BUFFER_SIZE = 65_536
 
     private val _isServerRunning = MutableStateFlow(false)
     val isServerRunning: StateFlow<Boolean> = _isServerRunning.asStateFlow()
@@ -136,6 +142,11 @@ object DropHubCoordinator {
                     }
                 }
             }
+            if (sizeBytes <= 0L) {
+                sizeBytes = runCatching {
+                    resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+                }.getOrDefault(0L).coerceAtLeast(0L)
+            }
 
             val mimeType = resolver.getType(uri) ?: "application/octet-stream"
             val item = DropFileItem(
@@ -154,8 +165,10 @@ object DropHubCoordinator {
     }
 
     /**
-     * Streams an incoming HTTP upload directly into Downloads/A-Kit via MediaStore.Downloads
-     * on Android 10+ (zero storage permissions needed) or FileProvider Downloads folder on Android 8-9.
+     * Streams an incoming HTTP upload (fixed-length or chunked, up to multi-GB) directly into a
+     * temporary staged file inside `Downloads/A-Kit` using 64KB chunks with zero RAM buffering.
+     *
+     * Pass [expectedBytes] <= 0L (or [Long.MAX_VALUE]) to stream until EOF (e.g., chunked uploads).
      */
     fun saveUploadedStreamToDownloads(
         context: Context,
@@ -183,6 +196,7 @@ object DropHubCoordinator {
     ): DropFileItem? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         val resolver = context.contentResolver
+        // IS_PENDING = 1 stages the upload in a temporary entry inside Downloads/A-Kit until complete
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
             put(MediaStore.Downloads.MIME_TYPE, mimeType)
@@ -193,8 +207,14 @@ object DropHubCoordinator {
         var written = 0L
         return try {
             resolver.openOutputStream(uri)?.use { out ->
-                written = copyExactBytes(inputStream, out, expectedBytes)
+                written = streamToDiskChunked(inputStream, out, expectedBytes)
+            } ?: error("Cannot open MediaStore output stream")
+
+            if (written <= 0L) {
+                runCatching { resolver.delete(uri, null, null) }
+                return null
             }
+
             val publishValues = ContentValues().apply {
                 put(MediaStore.Downloads.IS_PENDING, 0)
             }
@@ -215,20 +235,27 @@ object DropHubCoordinator {
     ): DropFileItem? {
         val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.cacheDir
         val targetDir = File(baseDir, "A-Kit").apply { mkdirs() }
-        val uniqueFile = resolveNonCollidingFile(targetDir, fileName)
+        // Stream directly to a temporary .tmp file inside Downloads/A-Kit, then atomically rename
+        val tempFile = File(targetDir, ".tmp_${UUID.randomUUID().toString().take(8)}_$fileName")
         var written = 0L
         return try {
-            FileOutputStream(uniqueFile).use { out ->
-                written = copyExactBytes(inputStream, out, expectedBytes)
+            FileOutputStream(tempFile).use { out ->
+                written = streamToDiskChunked(inputStream, out, expectedBytes)
             }
+            if (written <= 0L) {
+                tempFile.delete()
+                return null
+            }
+            val finalFile = resolveNonCollidingFile(targetDir, fileName)
+            val savedFile = if (tempFile.renameTo(finalFile)) finalFile else tempFile
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.drop.fileprovider",
-                uniqueFile,
+                savedFile,
             )
-            registerReceivedFile(uniqueFile.name, mimeType, written, uri, "Downloads/A-Kit")
+            registerReceivedFile(savedFile.name, mimeType, written, uri, "Downloads/A-Kit")
         } catch (_: Throwable) {
-            uniqueFile.delete()
+            tempFile.delete()
             null
         }
     }
@@ -262,6 +289,14 @@ object DropHubCoordinator {
             val uri = Uri.parse(item.uriString)
             context.contentResolver.openInputStream(uri)
         }.getOrNull()
+    }
+
+    fun resolveFileSizeBytes(context: Context, item: DropFileItem): Long {
+        if (item.sizeBytes > 0L) return item.sizeBytes
+        return runCatching {
+            val uri = Uri.parse(item.uriString)
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        }.getOrDefault(-1L)
     }
 
     fun serializePortalStateJson(): String {
@@ -301,24 +336,87 @@ object DropHubCoordinator {
         }.toString()
     }
 
-    private fun copyExactBytes(
+    /**
+     * Streams socket/input data directly to disk in 64KB chunks (`STREAM_BUFFER_SIZE = 65536`),
+     * periodically touching activity so large 300MB–2GB+ transfers never trigger idle shutdown.
+     */
+    private fun streamToDiskChunked(
         input: InputStream,
-        output: java.io.OutputStream,
+        output: OutputStream,
         expectedBytes: Long,
     ): Long {
-        val buffer = ByteArray(16 * 1024)
-        var remaining = expectedBytes
-        var totalWritten = 0L
-        while (remaining > 0L) {
-            val toRead = minOf(buffer.size.toLong(), remaining).toInt()
-            val read = input.read(buffer, 0, toRead)
-            if (read <= 0) break
-            output.write(buffer, 0, read)
-            totalWritten += read
-            remaining -= read
+        val bounded = expectedBytes in 1L until Long.MAX_VALUE
+        val source: InputStream = if (bounded) {
+            BoundedActivityInputStream(input, expectedBytes)
+        } else {
+            ActivityTrackingInputStream(input)
         }
+        val written = source.copyTo(output, bufferSize = STREAM_BUFFER_SIZE)
         output.flush()
-        return totalWritten
+        touchActivity()
+        return written
+    }
+
+    private class ActivityTrackingInputStream(
+        private val delegate: InputStream,
+    ) : InputStream() {
+        private var bytesSinceTouch = 0L
+
+        override fun read(): Int {
+            val b = delegate.read()
+            if (b >= 0) maybeTouch(1)
+            return b
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            val read = delegate.read(b, off, len)
+            if (read > 0) maybeTouch(read.toLong())
+            return read
+        }
+
+        private fun maybeTouch(delta: Long) {
+            bytesSinceTouch += delta
+            if (bytesSinceTouch >= ACTIVITY_TOUCH_INTERVAL_BYTES) {
+                bytesSinceTouch = 0L
+                touchActivity()
+            }
+        }
+    }
+
+    private class BoundedActivityInputStream(
+        private val delegate: InputStream,
+        private var remaining: Long,
+    ) : InputStream() {
+        private var bytesSinceTouch = 0L
+
+        override fun read(): Int {
+            if (remaining <= 0L) return -1
+            val b = delegate.read()
+            if (b >= 0) {
+                remaining -= 1L
+                maybeTouch(1L)
+            }
+            return b
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (remaining <= 0L) return -1
+            val toRead = minOf(len.toLong(), remaining).toInt()
+            val read = delegate.read(b, off, toRead)
+            if (read > 0) {
+                remaining -= read.toLong()
+                maybeTouch(read.toLong())
+            }
+            return read
+        }
+
+        private fun maybeTouch(delta: Long) {
+            bytesSinceTouch += delta
+            if (bytesSinceTouch >= ACTIVITY_TOUCH_INTERVAL_BYTES) {
+                bytesSinceTouch = 0L
+                touchActivity()
+            }
+        }
     }
 
     private fun resolveNonCollidingFile(dir: File, name: String): File {
@@ -344,4 +442,6 @@ object DropHubCoordinator {
             .trim()
         return base.ifBlank { "Drop_${System.currentTimeMillis()}.bin" }
     }
+
+    private const val ACTIVITY_TOUCH_INTERVAL_BYTES = 4L * 1024L * 1024L
 }

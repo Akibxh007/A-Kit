@@ -73,6 +73,7 @@ data class DropUiState(
     val isWifiEnabled: Boolean = false,
     val isWifiConnected: Boolean = false,
     val isLocalHotspotActive: Boolean = false,
+    val isHotspotResolvingIp: Boolean = false,
     val hotspotSsid: String? = null,
     val hotspotPassword: String? = null,
     val useAutoConnectQr: Boolean = true,
@@ -90,10 +91,17 @@ data class DropUiState(
     val peerSnippets: List<DropSnippet> = emptyList(),
     val peerFiles: List<PeerFileItem> = emptyList(),
     val downloadingPeerFileId: String? = null,
+    val fallbackWifiSsid: String? = null,
+    val fallbackWifiPassword: String? = null,
+    val showWifiFallbackAction: Boolean = false,
     val statusBanner: String? = null,
 ) {
     val serverUrl: String?
-        get() = localIpAddress?.let { "http://$it:$serverPort" }
+        get() = if (isLocalHotspotActive && isHotspotResolvingIp) {
+            null
+        } else {
+            localIpAddress?.let { "http://$it:$serverPort" }
+        }
 
     val activeQrContent: String?
         get() {
@@ -248,79 +256,155 @@ object DropUrlParser {
 
 object LocalNetworkUtils {
 
+    private val BLOCKED_CELLULAR_OR_TUNNEL_PREFIXES = listOf(
+        "rmnet",
+        "v4-",
+        "clat",
+        "ccmni",
+        "tun",
+        "tap",
+        "ppp",
+        "pdp",
+        "wwan",
+        "seth",
+        "epdg",
+        "ims",
+        "dummy",
+        "radio",
+        "lo",
+    )
+
+    private fun isBlockedInterface(nameLower: String): Boolean {
+        return BLOCKED_CELLULAR_OR_TUNNEL_PREFIXES.any { prefix ->
+            nameLower.startsWith(prefix) || nameLower.contains("rmnet") || nameLower.contains("ccmni")
+        }
+    }
+
+    private fun isAllowedLanInterface(nameLower: String): Boolean {
+        if (isBlockedInterface(nameLower)) return false
+        return nameLower.startsWith("wlan") ||
+            nameLower.startsWith("ap") ||
+            nameLower.startsWith("swlan") ||
+            nameLower.startsWith("softap") ||
+            nameLower.startsWith("p2p") ||
+            nameLower.startsWith("eth") ||
+            nameLower.startsWith("rndis") ||
+            nameLower.startsWith("usb") ||
+            nameLower.startsWith("br")
+    }
+
+    private fun isHotspotApInterface(nameLower: String): Boolean {
+        return nameLower.startsWith("ap") ||
+            nameLower.startsWith("swlan") ||
+            nameLower.startsWith("softap") ||
+            nameLower == "wlan1" ||
+            nameLower == "wlan2" ||
+            nameLower.startsWith("p2p")
+    }
+
+    private fun isHotspotGatewayIp(ip: String): Boolean {
+        return ip.startsWith("192.168.43.") ||
+            ip.startsWith("192.168.49.") ||
+            (ip.startsWith("192.168.") && ip.endsWith(".1"))
+    }
+
     /**
-     * Detects the best local IPv4 address for LAN Wi-Fi or Mobile Hotspot hosting
-     * without requiring internet connectivity.
+     * Resolves the active Local-Only Hotspot (`AndroidShare_xxxx`) gateway IPv4 address
+     * (e.g. `192.168.43.1` or `192.168.49.1` on `ap0`/`swlan0`/`wlan1`/`wlan0`).
      *
-     * When [preferHotspotInterface] is true (e.g., Local-Only Hotspot is active on a device
-     * with dual STA+AP concurrency), SoftAP interfaces (`ap*`, `swlan*`, `softap*`, `wlan1`,
-     * `wlan2`, or `192.168.49.*` / `192.168.43.*`) are prioritized so the advertised QR URL
-     * matches the exact hotspot gateway the receiver phone joins.
+     * Strictly ignores cellular/mobile-data interfaces and `172.x.x.x` carrier subnets so the
+     * sender QR code NEVER advertises an unreachable mobile-data IP.
      */
-    fun detectLocalIpv4Address(preferHotspotInterface: Boolean = false): String? {
+    fun detectHotspotGatewayIpv4(): String? {
         return runCatching {
             val candidates = mutableListOf<Pair<Int, String>>()
             val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
             for (nif in interfaces) {
                 if (!nif.isUp || nif.isLoopback || nif.isVirtual) continue
                 val name = nif.name.lowercase(Locale.US)
-                if (name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("tun") || name.startsWith("ppp")) {
-                    continue
-                }
-                val addresses = nif.inetAddresses.toList()
-                for (addr in addresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
-                        val host = addr.hostAddress ?: continue
-                        if (isPrivateLanIpv4(host)) {
-                            val isHotspotIf = name.startsWith("ap") ||
-                                name.startsWith("swlan") ||
-                                name.startsWith("softap") ||
-                                name == "wlan1" ||
-                                name == "wlan2" ||
-                                host.startsWith("192.168.49.") ||
-                                host.startsWith("192.168.43.")
-                            val priority = if (preferHotspotInterface) {
-                                when {
-                                    isHotspotIf -> 1
-                                    name.startsWith("wlan") -> 2
-                                    name.startsWith("eth") -> 3
-                                    else -> 4
-                                }
-                            } else {
-                                when {
-                                    name == "wlan0" -> 1
-                                    isHotspotIf -> 2
-                                    name.startsWith("wlan") -> 3
-                                    name.startsWith("eth") -> 4
-                                    else -> 5
-                                }
-                            }
-                            candidates.add(priority to host)
-                        }
+                if (isBlockedInterface(name)) continue
+                val isWifiOrAp = isHotspotApInterface(name) || name.startsWith("wlan")
+                if (!isWifiOrAp) continue
+
+                for (addr in nif.inetAddresses.toList()) {
+                    if (addr !is Inet4Address || addr.isLoopbackAddress || addr.isLinkLocalAddress) continue
+                    val host = addr.hostAddress ?: continue
+                    // Never allow cellular/carrier 172.x.x.x subnets for Offline Hotspot
+                    if (host.startsWith("172.")) continue
+                    if (!host.startsWith("192.168.") && !(isHotspotApInterface(name) && host.startsWith("10."))) {
+                        continue
+                    }
+
+                    val priority = when {
+                        isHotspotApInterface(name) && isHotspotGatewayIp(host) -> 1
+                        isHotspotApInterface(name) && host.startsWith("192.168.") -> 2
+                        name.startsWith("wlan") && (host.startsWith("192.168.43.") || host.startsWith("192.168.49.")) -> 3
+                        isHotspotApInterface(name) -> 4
+                        name.startsWith("wlan") && host.startsWith("192.168.") && host.endsWith(".1") -> 5
+                        else -> 99
+                    }
+                    if (priority < 99) {
+                        candidates.add(priority to host)
                     }
                 }
             }
             candidates.minByOrNull { it.first }?.second
-                ?: findAnyNonLoopbackIpv4()
+        }.getOrNull()
+    }
+
+    /**
+     * Detects the best local IPv4 address for LAN Wi-Fi or Mobile Hotspot hosting
+     * without requiring internet connectivity. Strictly excludes cellular/VPN interfaces so
+     * a mobile-data `172.x.x.x` address is never advertised.
+     */
+    fun detectLocalIpv4Address(preferHotspotInterface: Boolean = false): String? {
+        if (preferHotspotInterface) {
+            detectHotspotGatewayIpv4()?.let { return it }
+        }
+        return runCatching {
+            val candidates = mutableListOf<Pair<Int, String>>()
+            val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            for (nif in interfaces) {
+                if (!nif.isUp || nif.isLoopback || nif.isVirtual) continue
+                val name = nif.name.lowercase(Locale.US)
+                if (!isAllowedLanInterface(name)) continue
+
+                for (addr in nif.inetAddresses.toList()) {
+                    if (addr !is Inet4Address || addr.isLoopbackAddress || addr.isLinkLocalAddress) continue
+                    val host = addr.hostAddress ?: continue
+                    if (!isPrivateLanIpv4(host)) continue
+
+                    val isAp = isHotspotApInterface(name) || isHotspotGatewayIp(host)
+                    val priority = if (preferHotspotInterface) {
+                        when {
+                            isAp && !host.startsWith("172.") -> 1
+                            name.startsWith("wlan") && host.startsWith("192.168.") -> 2
+                            name.startsWith("wlan") && !host.startsWith("172.") -> 3
+                            name.startsWith("eth") -> 4
+                            else -> 5
+                        }
+                    } else {
+                        when {
+                            name == "wlan0" && host.startsWith("192.168.") -> 1
+                            isAp && !host.startsWith("172.") -> 2
+                            name.startsWith("wlan") -> 3
+                            name.startsWith("eth") -> 4
+                            else -> 5
+                        }
+                    }
+                    candidates.add(priority to host)
+                }
+            }
+            candidates.minByOrNull { it.first }?.second
         }.getOrNull()
     }
 
     private fun isPrivateLanIpv4(ip: String): Boolean {
-        return ip.startsWith("192.168.") ||
-            ip.startsWith("10.") ||
-            ip.startsWith("172.")
-    }
-
-    private fun findAnyNonLoopbackIpv4(): String? {
-        val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
-        for (nif in interfaces) {
-            if (!nif.isUp || nif.isLoopback) continue
-            for (addr in nif.inetAddresses.toList()) {
-                if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                    return addr.hostAddress
-                }
-            }
+        if (ip.startsWith("192.168.") || ip.startsWith("10.")) return true
+        if (ip.startsWith("172.")) {
+            val secondOctet = ip.removePrefix("172.").substringBefore('.').toIntOrNull() ?: return false
+            return secondOctet in 16..31
         }
-        return null
+        return false
     }
 }

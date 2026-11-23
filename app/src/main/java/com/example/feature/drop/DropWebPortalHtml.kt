@@ -233,11 +233,19 @@ object DropWebPortalHtml {
   });
 
   async function uploadFiles(fileList) {
+    let okCount = 0;
     for (let i = 0; i < fileList.length; i++) {
-      await uploadSingleFile(fileList[i], i + 1, fileList.length);
+      const ok = await uploadSingleFile(fileList[i], i + 1, fileList.length);
+      if (ok) okCount++;
     }
     progressWrap.style.display = 'none';
-    showToast('Upload saved to Downloads/A-Kit');
+    if (okCount === fileList.length) {
+      showToast('Saved ' + okCount + ' file(s) to Downloads/A-Kit');
+    } else if (okCount > 0) {
+      showToast('Saved ' + okCount + '/' + fileList.length + ' file(s)');
+    } else {
+      showToast('Upload failed — check connection and retry');
+    }
     fetchState();
   }
 
@@ -248,6 +256,7 @@ object DropWebPortalHtml {
       progressLabel.textContent = 'Uploading (' + idx + '/' + total + '): ' + file.name;
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/upload');
+      xhr.timeout = 0;
       xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
       xhr.setRequestHeader('X-Mime-Type', file.type || 'application/octet-stream');
       xhr.upload.onprogress = (ev) => {
@@ -257,8 +266,9 @@ object DropWebPortalHtml {
           progressLabel.textContent = file.name + ' (' + pct + '%)';
         }
       };
-      xhr.onload = () => resolve();
-      xhr.onerror = () => resolve();
+      xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+      xhr.onerror = () => resolve(false);
+      xhr.onabort = () => resolve(false);
       xhr.send(file);
     });
   }

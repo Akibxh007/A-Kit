@@ -21,7 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
-import java.io.ByteArrayOutputStream
+import java.io.BufferedOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -140,12 +140,17 @@ class DropServerService : Service() {
     private fun handleClientConnection(socket: Socket) {
         socket.use { client ->
             runCatching {
-                client.soTimeout = 30_000
+                // Header handshake timeout; switched to infinite (0) during large file streaming
+                client.soTimeout = HEADER_READ_TIMEOUT_MS
+                client.tcpNoDelay = true
+                client.receiveBufferSize = STREAM_BUFFER_SIZE
+                client.sendBufferSize = STREAM_BUFFER_SIZE
+
                 val remoteIp = client.inetAddress?.hostAddress
                 DropHubCoordinator.recordClientActivity(remoteIp)
 
-                val input = BufferedInputStream(client.getInputStream(), 16 * 1024)
-                val output = client.getOutputStream()
+                val input = BufferedInputStream(client.getInputStream(), STREAM_BUFFER_SIZE)
+                val output = BufferedOutputStream(client.getOutputStream(), STREAM_BUFFER_SIZE)
 
                 val requestLine = readAsciiLine(input) ?: return
                 val parts = requestLine.split(" ")
@@ -165,7 +170,14 @@ class DropServerService : Service() {
                     }
                 }
 
-                val contentLength = headers["content-length"]?.toLongOrNull() ?: 0L
+                // Honor HTTP/1.1 Expect: 100-continue immediately for large uploads
+                if (headers["expect"]?.contains("100-continue", ignoreCase = true) == true) {
+                    output.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                    output.flush()
+                }
+
+                val contentLength = headers["content-length"]?.toLongOrNull() ?: -1L
+                val isChunked = headers["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true
 
                 when {
                     method == "OPTIONS" -> {
@@ -223,7 +235,7 @@ class DropServerService : Service() {
                     }
 
                     method == "POST" && rawPath == "/api/upload" -> {
-                        if (contentLength <= 0L || contentLength > MAX_UPLOAD_BYTES) {
+                        if (!isChunked && (contentLength <= 0L || contentLength > MAX_UPLOAD_BYTES)) {
                             writeSimpleResponse(
                                 output,
                                 413,
@@ -233,19 +245,44 @@ class DropServerService : Service() {
                             )
                             return
                         }
+
+                        // Infinite read timeout while actively streaming 300MB–2GB+ uploads
+                        client.soTimeout = 0
+
                         val encodedName = headers["x-file-name"] ?: "Upload_${System.currentTimeMillis()}.bin"
-                        val fileName = runCatching {
+                        var fileName = runCatching {
                             URLDecoder.decode(encodedName, "UTF-8")
                         }.getOrDefault(encodedName)
-                        val mimeType = headers["x-mime-type"] ?: "application/octet-stream"
+                        var mimeType = headers["x-mime-type"] ?: "application/octet-stream"
 
-                        val saved = DropHubCoordinator.saveUploadedStreamToDownloads(
-                            context = applicationContext,
-                            rawFileName = fileName,
-                            mimeType = mimeType,
-                            inputStream = input,
-                            expectedBytes = contentLength,
-                        )
+                        val rawBodyStream: InputStream = if (isChunked) {
+                            HttpChunkedInputStream(input)
+                        } else {
+                            input
+                        }
+                        val expectedBytes = if (isChunked) -1L else contentLength
+
+                        // Support multipart/form-data streaming without RAM buffering as well as raw body streaming
+                        val contentTypeHeader = headers["content-type"].orEmpty()
+                        val boundary = extractMultipartBoundary(contentTypeHeader)
+
+                        val saved = if (boundary != null) {
+                            handleMultipartStreamingUpload(
+                                bodyStream = rawBodyStream,
+                                boundary = boundary,
+                                fallbackFileName = fileName,
+                                fallbackMimeType = mimeType,
+                            )
+                        } else {
+                            DropHubCoordinator.saveUploadedStreamToDownloads(
+                                context = applicationContext,
+                                rawFileName = fileName,
+                                mimeType = mimeType,
+                                inputStream = rawBodyStream,
+                                expectedBytes = expectedBytes,
+                            )
+                        }
+
                         if (saved != null) {
                             writeSimpleResponse(
                                 output,
@@ -280,6 +317,8 @@ class DropServerService : Service() {
                             )
                             return
                         }
+                        // Infinite timeout during multi-GB disk-to-socket downloads
+                        client.soTimeout = 0
                         streamFileResponse(output, fileItem)
                     }
 
@@ -297,6 +336,56 @@ class DropServerService : Service() {
         }
     }
 
+    private fun handleMultipartStreamingUpload(
+        bodyStream: InputStream,
+        boundary: String,
+        fallbackFileName: String,
+        fallbackMimeType: String,
+    ): DropFileItem? {
+        val buffered = BufferedInputStream(bodyStream, STREAM_BUFFER_SIZE)
+        val startBoundary = "--$boundary"
+        // Scan to first part boundary
+        var line = readAsciiLine(buffered)
+        while (line != null && !line.startsWith(startBoundary)) {
+            line = readAsciiLine(buffered)
+        }
+        if (line == null || line.startsWith("$startBoundary--")) return null
+
+        var partFileName = fallbackFileName
+        var partMimeType = fallbackMimeType
+        while (true) {
+            val hLine = readAsciiLine(buffered) ?: break
+            if (hLine.isEmpty()) break
+            val lower = hLine.lowercase(Locale.US)
+            if (lower.startsWith("content-disposition:")) {
+                val match = Regex("""filename="([^"]+)"""").find(hLine)
+                match?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }?.let {
+                    partFileName = it
+                }
+            } else if (lower.startsWith("content-type:")) {
+                hLine.substringAfter(':').trim().takeIf { it.isNotBlank() }?.let {
+                    partMimeType = it
+                }
+            }
+        }
+
+        val boundaryMarker = "\r\n--$boundary".toByteArray(Charsets.ISO_8859_1)
+        val partStream = MultipartBoundaryInputStream(buffered, boundaryMarker)
+        return DropHubCoordinator.saveUploadedStreamToDownloads(
+            context = applicationContext,
+            rawFileName = partFileName,
+            mimeType = partMimeType,
+            inputStream = partStream,
+            expectedBytes = -1L,
+        )
+    }
+
+    private fun extractMultipartBoundary(contentType: String): String? {
+        if (!contentType.contains("multipart/form-data", ignoreCase = true)) return null
+        val match = Regex("""boundary=([^;\s"]+|"[^"]+")""", RegexOption.IGNORE_CASE).find(contentType)
+        return match?.groupValues?.getOrNull(1)?.trim('"')?.takeIf { it.isNotBlank() }
+    }
+
     private fun streamFileResponse(output: OutputStream, item: DropFileItem) {
         val stream = DropHubCoordinator.openFileInputStream(applicationContext, item)
         if (stream == null) {
@@ -311,26 +400,48 @@ class DropServerService : Service() {
         }
 
         val safeDispositionName = item.fileName.replace("\"", "_")
+        val resolvedSize = DropHubCoordinator.resolveFileSizeBytes(applicationContext, item)
         stream.use { input ->
             val headerBuilder = StringBuilder()
                 .append("HTTP/1.1 200 OK\r\n")
                 .append("Content-Type: ${item.mimeType}\r\n")
                 .append("Content-Disposition: inline; filename=\"$safeDispositionName\"\r\n")
-            if (item.sizeBytes > 0L) {
-                headerBuilder.append("Content-Length: ${item.sizeBytes}\r\n")
+            if (resolvedSize > 0L) {
+                headerBuilder.append("Content-Length: $resolvedSize\r\n")
             }
             headerBuilder
                 .append("Cache-Control: no-store\r\n")
                 .append("Connection: close\r\n\r\n")
 
             output.write(headerBuilder.toString().toByteArray(Charsets.ISO_8859_1))
-            val buffer = ByteArray(16 * 1024)
-            while (true) {
-                val read = input.read(buffer)
-                if (read <= 0) break
-                output.write(buffer, 0, read)
-            }
             output.flush()
+
+            // Direct 64KB disk-to-socket streaming with zero in-memory buffering
+            val trackedInput = object : InputStream() {
+                private var sinceTouch = 0L
+                override fun read(): Int {
+                    val b = input.read()
+                    if (b >= 0) maybeTouch(1L)
+                    return b
+                }
+
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    val r = input.read(b, off, len)
+                    if (r > 0) maybeTouch(r.toLong())
+                    return r
+                }
+
+                private fun maybeTouch(delta: Long) {
+                    sinceTouch += delta
+                    if (sinceTouch >= 4L * 1024L * 1024L) {
+                        sinceTouch = 0L
+                        DropHubCoordinator.touchActivity()
+                    }
+                }
+            }
+            trackedInput.copyTo(output, bufferSize = STREAM_BUFFER_SIZE)
+            output.flush()
+            DropHubCoordinator.touchActivity()
         }
     }
 
@@ -356,19 +467,20 @@ class DropServerService : Service() {
     }
 
     private fun readAsciiLine(input: InputStream): String? {
-        val out = ByteArrayOutputStream(128)
+        val sb = StringBuilder(128)
         var sawAny = false
         while (true) {
             val b = input.read()
             if (b == -1) {
-                return if (sawAny) out.toString("ISO-8859-1") else null
+                return if (sawAny) sb.toString() else null
             }
             sawAny = true
             if (b == '\n'.code) break
-            if (b != '\r'.code) out.write(b)
-            if (out.size() > 8192) break
+            if (b != '\r'.code && sb.length < 8192) {
+                sb.append(b.toChar())
+            }
         }
-        return out.toString("ISO-8859-1")
+        return sb.toString()
     }
 
     private fun readFixedBytes(input: InputStream, count: Int): ByteArray {
@@ -431,11 +543,179 @@ class DropServerService : Service() {
             .build()
     }
 
+    /**
+     * Zero-buffering HTTP/1.1 `Transfer-Encoding: chunked` streaming decoder so clients using
+     * `HttpURLConnection.setChunkedStreamingMode(65536)` can stream multi-GB files directly to disk.
+     */
+    private class HttpChunkedInputStream(
+        private val raw: InputStream,
+    ) : InputStream() {
+        private var currentChunkRemaining = 0L
+        private var finished = false
+
+        override fun read(): Int {
+            val single = ByteArray(1)
+            val n = read(single, 0, 1)
+            return if (n == 1) single[0].toInt() and 0xFF else -1
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (finished) return -1
+            if (len == 0) return 0
+
+            while (currentChunkRemaining == 0L) {
+                val sizeLine = readLine() ?: run {
+                    finished = true
+                    return -1
+                }
+                val hex = sizeLine.substringBefore(';').trim()
+                if (hex.isEmpty()) continue
+                val chunkSize = hex.toLongOrNull(16) ?: run {
+                    finished = true
+                    return -1
+                }
+                if (chunkSize <= 0L) {
+                    // Consume trailing headers until blank line
+                    while (true) {
+                        val trailer = readLine() ?: break
+                        if (trailer.isEmpty()) break
+                    }
+                    finished = true
+                    return -1
+                }
+                currentChunkRemaining = chunkSize
+            }
+
+            val toRead = minOf(len.toLong(), currentChunkRemaining).toInt()
+            val read = raw.read(b, off, toRead)
+            if (read <= 0) {
+                finished = true
+                return -1
+            }
+            currentChunkRemaining -= read.toLong()
+            if (currentChunkRemaining == 0L) {
+                // Consume CRLF ending this chunk
+                readLine()
+            }
+            return read
+        }
+
+        private fun readLine(): String? {
+            val sb = StringBuilder(32)
+            var sawAny = false
+            while (true) {
+                val ch = raw.read()
+                if (ch == -1) return if (sawAny) sb.toString() else null
+                sawAny = true
+                if (ch == '\n'.code) break
+                if (ch != '\r'.code && sb.length < 1024) sb.append(ch.toChar())
+            }
+            return sb.toString()
+        }
+    }
+
+    /**
+     * Streaming multipart boundary reader that emits file payload bytes directly in 64KB chunks
+     * while holding only a small tail window (`boundary.size` bytes) in memory.
+     */
+    private class MultipartBoundaryInputStream(
+        private val source: InputStream,
+        private val marker: ByteArray,
+    ) : InputStream() {
+        private val ring = ByteArray(STREAM_BUFFER_SIZE + marker.size)
+        private var start = 0
+        private var end = 0
+        private var eofReached = false
+        private var markerHit = false
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            val n = read(one, 0, 1)
+            return if (n == 1) one[0].toInt() and 0xFF else -1
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (markerHit && start >= end) return -1
+            if (len == 0) return 0
+
+            while (true) {
+                val available = end - start
+                if (!markerHit && available < marker.size && !eofReached) {
+                    refill()
+                }
+                val currentAvail = end - start
+                if (currentAvail <= 0) return -1
+
+                val matchIdx = if (!markerHit) findMarker(ring, start, end, marker) else -1
+                if (matchIdx >= 0) {
+                    markerHit = true
+                    val emitCount = minOf(len, matchIdx - start)
+                    if (emitCount > 0) {
+                        System.arraycopy(ring, start, b, off, emitCount)
+                        start += emitCount
+                        return emitCount
+                    }
+                    start = end
+                    return -1
+                }
+
+                val safeEmit = if (eofReached || markerHit) {
+                    currentAvail
+                } else {
+                    (currentAvail - marker.size).coerceAtLeast(0)
+                }
+                if (safeEmit > 0) {
+                    val toCopy = minOf(len, safeEmit)
+                    System.arraycopy(ring, start, b, off, toCopy)
+                    start += toCopy
+                    return toCopy
+                }
+                if (eofReached) return -1
+                refill()
+            }
+        }
+
+        private fun refill() {
+            val remaining = end - start
+            if (start > 0 && remaining > 0) {
+                System.arraycopy(ring, start, ring, 0, remaining)
+            }
+            start = 0
+            end = remaining
+            val space = ring.size - end
+            if (space <= 0) return
+            val read = source.read(ring, end, space)
+            if (read <= 0) {
+                eofReached = true
+            } else {
+                end += read
+            }
+        }
+
+        private fun findMarker(buf: ByteArray, from: Int, to: Int, needle: ByteArray): Int {
+            val limit = to - needle.size
+            if (limit < from) return -1
+            val first = needle[0]
+            var i = from
+            while (i <= limit) {
+                if (buf[i] == first) {
+                    var j = 1
+                    while (j < needle.size && buf[i + j] == needle[j]) j++
+                    if (j == needle.size) return i
+                }
+                i++
+            }
+            return -1
+        }
+    }
+
     companion object {
         private const val CHANNEL_ID = "akit_drop_server_channel"
         private const val NOTIFICATION_ID = 6301
         private const val DEFAULT_PORT = 8080
-        private const val MAX_UPLOAD_BYTES = 150L * 1024L * 1024L
+        private const val STREAM_BUFFER_SIZE = DropHubCoordinator.STREAM_BUFFER_SIZE
+        private const val HEADER_READ_TIMEOUT_MS = 15_000
+        private const val MAX_UPLOAD_BYTES = 16L * 1024L * 1024L * 1024L // 16 GB max single transfer
         private const val IDLE_TIMEOUT_MS = 15L * 60_000L
         private const val IDLE_CHECK_INTERVAL_MS = 30_000L
 

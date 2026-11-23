@@ -140,7 +140,7 @@ fun DropScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshNetwork()
+                viewModel.retryPendingPeerOnResume()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -231,7 +231,7 @@ fun DropScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Optional Status Banner
+        // Optional Status Banner (with 1-tap Copy Password & Open Wi-Fi Settings fallback if auto-join fails)
         if (state.statusBanner != null) {
             item(key = "drop_status_banner") {
                 Surface(
@@ -243,26 +243,61 @@ fun DropScreen(
                         .fillMaxWidth()
                         .testTag("drop_status_banner"),
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(
-                            text = state.statusBanner.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = viewModel::dismissBanner) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Dismiss banner",
-                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.size(18.dp),
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = state.statusBanner.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.weight(1f),
                             )
+                            IconButton(onClick = viewModel::dismissBanner) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Dismiss banner",
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+
+                        if (state.showWifiFallbackAction && !state.fallbackWifiSsid.isNullOrBlank()) {
+                            Button(
+                                onClick = {
+                                    copyHotspotPasswordAndOpenWifiSettings(
+                                        context = context,
+                                        ssid = state.fallbackWifiSsid.orEmpty(),
+                                        password = state.fallbackWifiPassword,
+                                    )
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("drop_wifi_fallback_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Wifi,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(17.dp),
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Copy Password & Open Wi-Fi Settings",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
                         }
                     }
                 }
@@ -720,6 +755,25 @@ fun DropScreen(
                                         )
                                     }
                                 }
+                            }
+                        } else if (state.isLocalHotspotActive && state.isHotspotResolvingIp) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 18.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Waiting for Offline Hotspot IP (ap0/wlan0)...",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         } else {
                             Text(
@@ -1337,6 +1391,34 @@ private fun ConnectedPeerHubCard(
                 }
             }
 
+            if (!state.isPeerConnected && state.showWifiFallbackAction && !state.fallbackWifiSsid.isNullOrBlank()) {
+                val peerCtx = LocalContext.current
+                FilledTonalButton(
+                    onClick = {
+                        copyHotspotPasswordAndOpenWifiSettings(
+                            context = peerCtx,
+                            ssid = state.fallbackWifiSsid.orEmpty(),
+                            password = state.fallbackWifiPassword,
+                        )
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Wifi,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Copy Password & Open Wi-Fi Settings",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+
             // Send quick text to peer
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1685,6 +1767,31 @@ private fun copyToClipboard(context: Context, label: String, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
     cm.setPrimaryClip(ClipData.newPlainText(label, text))
     Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+}
+
+private fun copyHotspotPasswordAndOpenWifiSettings(
+    context: Context,
+    ssid: String,
+    password: String?,
+) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    if (!password.isNullOrBlank()) {
+        cm?.setPrimaryClip(ClipData.newPlainText("Hotspot Password", password))
+        Toast.makeText(
+            context,
+            "Password copied! Join \"$ssid\" in Wi-Fi Settings, then return to A-Kit.",
+            Toast.LENGTH_LONG,
+        ).show()
+    } else {
+        Toast.makeText(
+            context,
+            "Join \"$ssid\" in Wi-Fi Settings, then return to A-Kit.",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+    runCatching {
+        context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+    }
 }
 
 private fun readFromClipboard(context: Context): String? {

@@ -15,6 +15,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 /**
  * 100% offline Wi-Fi Hotspot, Wi-Fi Socket Binding & Peer Auto-Connect manager.
@@ -23,7 +26,8 @@ import androidx.core.content.ContextCompat
  *   requiring zero internet or mobile data, returning its temporary SSID & WPA2 password to embed
  *   in A-Kit's QR code.
  * - **Receiver**: Joins a scanned hotspot automatically on Android 10+ via `WifiNetworkSpecifier`
- *   and binds the process/HTTP traffic to that offline `Network`.
+ *   inside a ViewModel-scoped coroutine, keeping the `ConnectivityManager.NetworkCallback` alive
+ *   across the entire session until explicit disconnect or ViewModel teardown.
  * - **Explicit Wi-Fi Socket Routing**: [findActiveWifiNetwork] resolves any active `TRANSPORT_WIFI`
  *   [Network] so local LAN HTTP requests (`http://192.168.x.x:8080`) always traverse Wi-Fi/Hotspot
  *   rather than Mobile Data when the Wi-Fi link has no internet access.
@@ -177,28 +181,28 @@ object DropOfflineWifiManager {
     }
 
     /**
-     * Connects the receiver phone directly to the sender's offline Wi-Fi hotspot on Android 10+
-     * using [WifiNetworkSpecifier], and binds the app process to that [Network] so offline LAN
-     * sockets route cleanly without requiring internet access.
+     * Requests a `WifiNetworkSpecifier` connection inside a ViewModel-scoped coroutine.
+     *
+     * IMPORTANT: The registered [ConnectivityManager.NetworkCallback] is deliberately kept alive
+     * after this function returns `Result.success(network)` (because Android immediately drops a
+     * `WifiNetworkSpecifier` connection if its callback is unregistered). It is only released when
+     * [disconnectBoundNetwork] is called on explicit disconnect or ViewModel teardown, or if the
+     * requesting coroutine is cancelled before connecting.
      */
-    fun connectToHotspot(
+    suspend fun awaitHotspotConnection(
         context: Context,
         ssid: String,
         password: String?,
-        onConnected: (Network) -> Unit,
-        onFailed: (String) -> Unit,
-    ) {
+        timeoutMs: Int = 30_000,
+    ): Result<Network> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            val passHint = if (!password.isNullOrBlank()) " (Password: $password)" else ""
-            onFailed("Connect manually to Wi-Fi \"$ssid\"$passHint in Settings, then retry.")
-            return
+            return Result.failure(
+                IllegalStateException("Auto-join requires Android 10+. Copy the password and join \"$ssid\" in Wi-Fi Settings."),
+            )
         }
 
         val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        if (cm == null) {
-            onFailed("Connectivity service unavailable.")
-            return
-        }
+            ?: return Result.failure(IllegalStateException("Connectivity service unavailable."))
 
         disconnectBoundNetwork(context)
 
@@ -213,42 +217,67 @@ object DropOfflineWifiManager {
             .setNetworkSpecifier(specifierBuilder.build())
             .build()
 
-        var delivered = false
-        val mainHandler = Handler(Looper.getMainLooper())
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                activeBoundNetwork = network
-                runCatching { cm.bindProcessToNetwork(network) }
-                if (!delivered) {
-                    delivered = true
-                    mainHandler.post { onConnected(network) }
+        return suspendCancellableCoroutine { cont ->
+            val resumed = AtomicBoolean(false)
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    activeBoundNetwork = network
+                    runCatching { cm.bindProcessToNetwork(network) }
+                    if (resumed.compareAndSet(false, true) && cont.isActive) {
+                        cont.resume(Result.success(network))
+                    }
                 }
-            }
 
-            override fun onUnavailable() {
-                activeBoundNetwork = null
-                if (!delivered) {
-                    delivered = true
-                    mainHandler.post {
-                        onFailed("Could not join hotspot \"$ssid\". Confirm the system prompt or join manually in Wi-Fi Settings.")
+                override fun onUnavailable() {
+                    if (activeNetworkCallback === this) {
+                        runCatching { cm.unregisterNetworkCallback(this) }
+                        activeNetworkCallback = null
+                    }
+                    activeBoundNetwork = null
+                    if (resumed.compareAndSet(false, true) && cont.isActive) {
+                        cont.resume(
+                            Result.failure(
+                                IllegalStateException(
+                                    "Hotspot prompt dismissed or unsupported on this ROM. Tap below to copy password & join \"$ssid\" manually.",
+                                ),
+                            ),
+                        )
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    if (activeBoundNetwork == network) {
+                        activeBoundNetwork = null
+                        runCatching { cm.bindProcessToNetwork(null) }
                     }
                 }
             }
 
-            override fun onLost(network: Network) {
-                if (activeBoundNetwork == network) {
-                    activeBoundNetwork = null
-                    runCatching { cm.bindProcessToNetwork(null) }
+            activeNetworkCallback = callback
+            cont.invokeOnCancellation {
+                // Only tear down if the coroutine was cancelled BEFORE the network connected
+                if (activeBoundNetwork == null && activeNetworkCallback === callback) {
+                    runCatching { cm.unregisterNetworkCallback(callback) }
+                    activeNetworkCallback = null
                 }
             }
-        }
 
-        activeNetworkCallback = callback
-        try {
-            cm.requestNetwork(request, callback, 25_000)
-        } catch (t: Throwable) {
-            activeNetworkCallback = null
-            onFailed("Failed to request Wi-Fi hotspot connection: ${t.message ?: "unknown error"}")
+            try {
+                cm.requestNetwork(request, callback, timeoutMs)
+            } catch (t: Throwable) {
+                if (activeNetworkCallback === callback) {
+                    activeNetworkCallback = null
+                }
+                if (resumed.compareAndSet(false, true) && cont.isActive) {
+                    cont.resume(
+                        Result.failure(
+                            IllegalStateException(
+                                "Auto-join unavailable (${t.message ?: "OEM restriction"}). Copy password & join \"$ssid\" in Wi-Fi Settings.",
+                            ),
+                        ),
+                    )
+                }
+            }
         }
     }
 

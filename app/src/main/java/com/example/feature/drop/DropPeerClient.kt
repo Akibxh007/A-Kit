@@ -19,13 +19,17 @@ data class PeerStatePayload(
  * 100% offline LAN HTTP client allowing an A-Kit device to connect natively to another
  * A-Kit Drop server via QR scan, offline hotspot auto-connect, or `akit://drop` deep link.
  *
- * Supports optional [Network] binding so HTTP traffic routes directly through a local-only
- * hotspot even when the network has zero internet access (preventing ERR_INTERNET_DISCONNECTED).
+ * Uses direct 64KB disk-to-socket streaming (`copyTo(out, bufferSize = 65536)`),
+ * `setFixedLengthStreamingMode(fileSize)` / `setChunkedStreamingMode(65536)`,
+ * `connectTimeout = 15000`, and `readTimeout = 0` (infinite during active stream) so
+ * 300MB–2GB+ transfers run at full Wi-Fi speed without OOM or socket timeouts.
  */
 object DropPeerClient {
 
-    private const val CONNECT_TIMEOUT_MS = 4_500
-    private const val READ_TIMEOUT_MS = 12_000
+    private const val STREAM_BUFFER_SIZE = 65_536
+    private const val PING_TIMEOUT_MS = 5_000
+    private const val TRANSFER_CONNECT_TIMEOUT_MS = 15_000
+    private const val STATE_READ_TIMEOUT_MS = 12_000
 
     private fun openConnection(url: URL, boundNetwork: Network?): HttpURLConnection {
         val raw = if (boundNetwork != null) {
@@ -47,8 +51,8 @@ object DropPeerClient {
         val cleanBase = baseUrl.trimEnd('/')
         val conn = openConnection(URL("$cleanBase/api/ping"), boundNetwork).apply {
             requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = CONNECT_TIMEOUT_MS
+            connectTimeout = PING_TIMEOUT_MS
+            readTimeout = PING_TIMEOUT_MS
             useCaches = false
         }
         try {
@@ -74,8 +78,8 @@ object DropPeerClient {
         val cleanBase = baseUrl.trimEnd('/')
         val conn = openConnection(URL("$cleanBase/api/state"), boundNetwork).apply {
             requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
+            connectTimeout = TRANSFER_CONNECT_TIMEOUT_MS
+            readTimeout = STATE_READ_TIMEOUT_MS
             useCaches = false
         }
         try {
@@ -137,10 +141,11 @@ object DropPeerClient {
         val payload = text.trim().toByteArray(Charsets.UTF_8)
         val conn = openConnection(URL("$cleanBase/api/snippets"), boundNetwork).apply {
             requestMethod = "POST"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
+            connectTimeout = TRANSFER_CONNECT_TIMEOUT_MS
+            readTimeout = STATE_READ_TIMEOUT_MS
             doOutput = true
-            setFixedLengthStreamingMode(payload.size)
+            useCaches = false
+            setFixedLengthStreamingMode(payload.size.toLong())
             setRequestProperty("Content-Type", "text/plain; charset=utf-8")
         }
         try {
@@ -154,6 +159,10 @@ object DropPeerClient {
         }
     }
 
+    /**
+     * Streams any file (300MB–2GB+) directly from ContentResolver disk stream to the peer's
+     * HTTP socket in 64KB chunks with zero RAM buffering and infinite active stream timeout.
+     */
     fun uploadUri(
         context: Context,
         baseUrl: String,
@@ -175,42 +184,34 @@ object DropPeerClient {
                 }
             }
         }
-        val mimeType = resolver.getType(uri) ?: "application/octet-stream"
-
-        // If ContentResolver did not provide exact byte size, buffer safely for Content-Length
-        val bytesFallback: ByteArray? = if (sizeBytes <= 0L) {
-            resolver.openInputStream(uri)?.use { it.readBytes() }
-        } else {
-            null
+        if (sizeBytes <= 0L) {
+            sizeBytes = runCatching {
+                resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+            }.getOrDefault(-1L)
         }
-        val contentLength = bytesFallback?.size?.toLong() ?: sizeBytes
-        require(contentLength > 0L) { "Unable to read selected file" }
+        val mimeType = resolver.getType(uri) ?: "application/octet-stream"
 
         val cleanBase = baseUrl.trimEnd('/')
         val conn = openConnection(URL("$cleanBase/api/upload"), boundNetwork).apply {
             requestMethod = "POST"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = 60_000
+            connectTimeout = TRANSFER_CONNECT_TIMEOUT_MS
+            readTimeout = 0 // Infinite during active large-file stream
             doOutput = true
-            setFixedLengthStreamingMode(contentLength)
+            useCaches = false
+            if (sizeBytes > 0L) {
+                setFixedLengthStreamingMode(sizeBytes)
+            } else {
+                setChunkedStreamingMode(STREAM_BUFFER_SIZE)
+            }
             setRequestProperty("X-File-Name", URLEncoder.encode(displayName, "UTF-8"))
             setRequestProperty("X-Mime-Type", mimeType)
             setRequestProperty("Content-Type", "application/octet-stream")
         }
         try {
             conn.outputStream.use { out ->
-                if (bytesFallback != null) {
-                    out.write(bytesFallback)
-                } else {
-                    resolver.openInputStream(uri)?.use { input ->
-                        val buf = ByteArray(16 * 1024)
-                        while (true) {
-                            val read = input.read(buf)
-                            if (read <= 0) break
-                            out.write(buf, 0, read)
-                        }
-                    } ?: error("Cannot open file stream")
-                }
+                resolver.openInputStream(uri)?.use { input ->
+                    input.copyTo(out, bufferSize = STREAM_BUFFER_SIZE)
+                } ?: error("Cannot open file stream")
                 out.flush()
             }
             val code = conn.responseCode
@@ -223,6 +224,10 @@ object DropPeerClient {
         }
     }
 
+    /**
+     * Streams a peer file (300MB–2GB+) directly from socket to a temporary staged file in
+     * `Downloads/A-Kit` using 64KB chunks with infinite read timeout during active transfer.
+     */
     fun downloadFileToDownloads(
         context: Context,
         baseUrl: String,
@@ -233,8 +238,9 @@ object DropPeerClient {
         val encodedId = URLEncoder.encode(item.id, "UTF-8")
         val conn = openConnection(URL("$cleanBase/api/files/$encodedId"), boundNetwork).apply {
             requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = 60_000
+            connectTimeout = TRANSFER_CONNECT_TIMEOUT_MS
+            readTimeout = 0 // Infinite during active large-file stream
+            useCaches = false
         }
         try {
             val code = conn.responseCode
@@ -242,8 +248,8 @@ object DropPeerClient {
                 error("Download failed (HTTP $code)")
             }
             val length = conn.contentLengthLong
-            val stream = BufferedInputStream(conn.inputStream, 16 * 1024)
-            val expectedBytes = if (length > 0L) length else Long.MAX_VALUE
+            val stream = BufferedInputStream(conn.inputStream, STREAM_BUFFER_SIZE)
+            val expectedBytes = if (length > 0L) length else -1L
             val saved = DropHubCoordinator.saveUploadedStreamToDownloads(
                 context = context,
                 rawFileName = item.fileName,
