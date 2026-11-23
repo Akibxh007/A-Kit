@@ -1,0 +1,66 @@
+<resources>
+    <string name="app_name">A-Kit</string>
+    <string name="app_tagline">Offline Native Utility Suite</string>
+    <string name="badge_offline_only">100% OFFLINE</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_power">Power</string>
+    <string name="nav_snapclean">SnapClean</string>
+    <string name="nav_drop">Drop</string>
+
+    <!-- Top Bar & Theme/About Modal -->
+    <string name="cd_theme_about_button">Open appearance and about A-Kit</string>
+    <string name="cd_app_emblem">A-Kit emblem</string>
+    <string name="sheet_appearance_title">Appearance</string>
+    <string name="sheet_theme_mode_label">Surface Theme</string>
+    <string name="theme_mode_system">System</string>
+    <string name="theme_mode_light">Light</string>
+    <string name="theme_mode_dark">Dark</string>
+    <string name="theme_mode_amoled">AMOLED</string>
+    <string name="sheet_dynamic_color_title">Material You Dynamic Color</string>
+    <string name="sheet_dynamic_color_subtitle">Match wallpaper palette on Android 12+</string>
+    <string name="sheet_dynamic_color_unavailable">Requires Android 12 or newer</string>
+    <string name="sheet_about_title">About A-Kit</string>
+    <string name="sheet_about_description">Open-source, ad-free Android utility suite engineered for zero cloud dependencies, zero telemetry, and pure local hardware control.</string>
+    <string name="sheet_privacy_guarantee">Zero Internet Permission • Zero Trackers • Zero Ads</string>
+    <string name="sheet_permissions_title">Manifest Permission Matrix</string>
+    <string name="action_close">Done</string>
+
+    <!-- Power Module -->
+    <string name="power_module_code">MOD-01 • TELEMETRY</string>
+    <string name="power_hero_title">Power &amp; Thermal Suite</string>
+    <string name="power_hero_subtitle">Live hardware battery telemetry, charging diagnostics, thermal thresholds, and floating HUD controls.</string>
+    <string name="power_section_live">Live Hardware Telemetry</string>
+    <string name="power_section_modules">Modular Architecture Slots</string>
+    <string name="power_metric_level">Charge Level</string>
+    <string name="power_metric_temp">Battery Temp</string>
+    <string name="power_metric_voltage">Cell Voltage</string>
+    <string name="power_metric_health">Cell Health</string>
+
+    <!-- SnapClean Module -->
+    <string name="snapclean_module_code">MOD-02 • MEDIA HYGIENE</string>
+    <string name="snapclean_hero_title">SnapClean Auto-Cleaner</string>
+    <string name="snapclean_hero_subtitle">Automatic on-device screenshot lifecycle rules, protected vault whitelisting, and instant storage reclamation.</string>
+    <string name="snapclean_section_policy">Default Retention Policy</string>
+    <string name="snapclean_section_modules">Modular Architecture Slots</string>
+    <string name="snapclean_permission_ready">Media &amp; Alert Access Ready</string>
+    <string name="snapclean_permission_pending">Permissions Pending Setup</string>
+    <string name="action_grant_permissions">Grant Access</string>
+
+    <!-- Drop Module -->
+    <string name="drop_module_code">MOD-03 • LOCAL P2P</string>
+    <string name="drop_hero_title">Drop Wi-Fi Share</string>
+    <string name="drop_hero_subtitle">Zero-cloud, full-speed peer-to-peer local Wi-Fi transfers with QR handshake pairing and encrypted local sockets.</string>
+    <string name="drop_section_radio">Local Radio Readiness</string>
+    <string name="drop_section_modules">Modular Architecture Slots</string>
+    <string name="drop_mode_send">Send Mode</string>
+    <string name="drop_mode_receive">Receive Mode</string>
+
+    <!-- Generic Module UI -->
+    <string name="status_ready_to_wire">Ready to wire</string>
+    <string name="status_live_sensor">Live sensor</string>
+    <string name="status_granted">Granted</string>
+    <string name="status_not_granted">Not granted</string>
+    <string name="status_install_time">Declared</string>
+    <string name="cd_module_inspect">Inspect module blueprint</string>
+</resources>

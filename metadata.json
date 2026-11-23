@@ -1,0 +1,6 @@
+{
+  "name": "A-Kit",
+  "description": "100% offline, ad-free native Android utility suite featuring Power telemetry, SnapClean screenshot management, and Drop local P2P Wi-Fi share.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
