@@ -13,11 +13,19 @@
     <!-- SnapClean Smart Screenshot Manager -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
-    <!-- Drop Local P2P Wi-Fi Share (100% Local LAN / Hotspot ServerSocket & QR Scanner) -->
+    <!-- Drop Local P2P Wi-Fi Share (100% Local LAN / Hotspot ServerSocket, WifiNetworkSpecifier & QR Scanner) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="tiramisu" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.CAMERA" />
 
     <uses-feature

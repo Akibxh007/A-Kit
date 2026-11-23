@@ -387,22 +387,45 @@ object PowerTelemetryEngine {
             null
         }
 
-        // Smart Dual-Cell (2S) detection:
-        // Many 2S fast-charging phones (Xiaomi/OnePlus/Realme/Vivo) report single-cell voltage (~4.3V)
-        // and half the charge counter (~2500mAh for a 5000mAh pack), halving naive V*I wattage (~9.1W vs ~18.8W).
-        // Never double if the kernel already reports series pack voltage (> 5800mV).
+        // Smart Dual-Cell (2S) auto-detection on first run:
+        // Detects 2S series packs when single-cell voltage is reported (~3.0-5.4V) AND either:
+        //  (a) Charge counter yields ~half the design capacity (< 62% of designMah), OR
+        //  (b) High-speed fast charging (>15W raw or effective 2S charge pump on AC) is detected on first run.
+        // Never doubles if the kernel already reports series pack voltage (> 5.4V),
+        // and always respects manual user toggles once overridden.
         val kernelReportsSingleCellVoltage = normalizedVoltageMv in 3000..5400
-        val autoDualCellDetected = kernelReportsSingleCellVoltage &&
-            rawEstimatedFullMah != null &&
+        val rawSingleCellWatts = (normalizedVoltageMv / 1000f) * (absMaFloat / 1000f)
+        val halfCapacitySignature = rawEstimatedFullMah != null &&
             rawEstimatedFullMah < (designMah * 0.62f).roundToInt()
+        val fastChargePumpSignature = isCharging &&
+            plugged == BatteryManager.BATTERY_PLUGGED_AC &&
+            (rawSingleCellWatts > 15f || (rawSingleCellWatts * 2f > 15f && absMaFloat >= 1750f))
 
-        val effectiveDualCell = (currentSettings.dualCellMode || autoDualCellDetected) &&
-            kernelReportsSingleCellVoltage
+        val autoDualCellDetected = kernelReportsSingleCellVoltage &&
+            (halfCapacitySignature || fastChargePumpSignature)
 
+        // Automatically enable Dual-Cell calibration on first run if not manually overridden
+        if (autoDualCellDetected && !currentSettings.dualCellUserOverridden && !currentSettings.dualCellMode) {
+            updateSettings { prevSettings ->
+                if (!prevSettings.dualCellUserOverridden && !prevSettings.dualCellMode) {
+                    prevSettings.copy(dualCellMode = true)
+                } else {
+                    prevSettings
+                }
+            }
+        }
+
+        val userOrAutoDualCell = if (currentSettings.dualCellUserOverridden) {
+            currentSettings.dualCellMode
+        } else {
+            currentSettings.dualCellMode || autoDualCellDetected
+        }
+
+        val effectiveDualCell = userOrAutoDualCell && kernelReportsSingleCellVoltage
         val cellMultiplier = if (effectiveDualCell) 2 else 1
         val effectiveVoltageMv = normalizedVoltageMv * cellMultiplier
 
-        // Accurate real-time wattage: Effective Pack Voltage (V) * Current (A)
+        // Accurate real-time pack wattage: Effective Pack Voltage (V) * Current (A)
         val watts = (effectiveVoltageMv / 1000f) * (absMaFloat / 1000f)
 
         val estimatedMah = when {
@@ -416,7 +439,7 @@ object PowerTelemetryEngine {
 
         val now = System.currentTimeMillis()
 
-        // Smooth live decimal battery percentage via charge-counter + coulomb interpolation
+        // Smooth live decimal battery percentage via charge-counter + 2S-normalized coulomb interpolation
         val exactPercent = computeSmoothDecimalPercent(
             osPercent = percent,
             isCharging = isCharging,
@@ -427,14 +450,16 @@ object PowerTelemetryEngine {
             nowMs = now,
         )
 
-        // Live Estimated Time Remaining (API 28+ computeChargeTimeRemaining with accurate coulomb fallback)
+        // Accurate Watt-Hour Energy Time Estimate (never double-counts 2S series current)
         val (estimateLong, estimateShort) = computeTimeEstimate(
             bm = bm,
             osPercent = percent,
             exactPercent = exactPercent,
             isCharging = isCharging,
+            watts = watts,
             absMaFloat = absMaFloat,
             effectiveFullMah = effectiveFullMah,
+            effectiveDualCell = effectiveDualCell,
         )
 
         // Track automatic session start/end transitions
@@ -553,7 +578,6 @@ object PowerTelemetryEngine {
             return 0.00f
         }
 
-        // First reading or OS integer level changed -> anchor cleanly to the new integer boundary
         if (lastOsLevelPercent == -1 || lastIntegrationMs == 0L) {
             val initialFrac = estimateFractionalOffsetFromCoulomb(
                 osPercent = osPercent,
@@ -583,10 +607,11 @@ object PowerTelemetryEngine {
         lastIntegrationMs = nowMs
         if (dtMs <= 0L) return smoothExactPercent
 
-        // Integrate live current (mA * hours / full_mAh * 100%) so decimal smoothly progresses
+        // Normalize current to single-cell-equivalent capacity (in 2S, series current charges BOTH cells simultaneously)
         val dtHours = dtMs / 3_600_000f
-        val effectiveCurrentMa = if (absMaFloat > 20f) absMaFloat else if (isCharging) 350f else 180f
-        val deltaPct = (effectiveCurrentMa * dtHours / effectiveFullMah) * 100f
+        val baseCurrentMa = if (absMaFloat > 20f) absMaFloat else if (isCharging) 350f else 180f
+        val equivalentSingleCellMa = if (effectiveDualCell) baseCurrentMa * 2f else baseCurrentMa
+        val deltaPct = (equivalentSingleCellMa * dtHours / effectiveFullMah) * 100f
 
         val lowerBound = osPercent.toFloat()
         val upperBound = (osPercent + 0.99f).coerceAtMost(99.99f)
@@ -613,32 +638,50 @@ object PowerTelemetryEngine {
         return if (diff in 0.0f..0.99f) diff else 0.35f
     }
 
+    /**
+     * Computes remaining charge/discharge time using pack Watt-Hours (Wh = mAh/1000 * 3.85V)
+     * divided by true net pack power (W). This avoids the classic 2S Dual-Cell bug where
+     * dividing single-cell-equivalent mAh (e.g. 5000mAh) by series current (e.g. 960mA at 8.1V)
+     * mistakenly doubles the estimated time to full.
+     */
     private fun computeTimeEstimate(
         bm: BatteryManager?,
         osPercent: Int,
         exactPercent: Float,
         isCharging: Boolean,
+        watts: Float,
         absMaFloat: Float,
         effectiveFullMah: Float,
+        effectiveDualCell: Boolean,
     ): Pair<String, String> {
+        val packEnergyWh = (effectiveFullMah / 1000f) * NOMINAL_CELL_VOLTAGE_V
+
         if (isCharging) {
             if (osPercent >= 100) return "Fully Charged" to "Full"
 
-            // Prefer Android OS charge time estimator on API 28+ when available
-            val osMillis = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                runCatching { bm?.computeChargeTimeRemaining() ?: -1L }.getOrDefault(-1L)
+            val totalMinutes = if (watts >= 1.2f) {
+                val remainingFraction = ((100f - exactPercent).coerceAtLeast(0.5f)) / 100f
+                val remainingWh = packEnergyWh * remainingFraction
+                // Gentle lithium-ion CV taper factor above 80%
+                val taperFactor = when {
+                    osPercent >= 90 -> 1.22f
+                    osPercent >= 80 -> 1.12f
+                    else -> 1.03f
+                }
+                ((remainingWh / watts) * 60f * taperFactor).roundToInt().coerceIn(1, 999)
             } else {
-                -1L
-            }
-
-            val totalMinutes = if (osMillis > 60_000L) {
-                (osMillis / 60_000L).toInt().coerceIn(1, 999)
-            } else {
-                val remainingMah = effectiveFullMah * ((100f - exactPercent).coerceAtLeast(0.5f) / 100f)
-                val effectiveMa = absMaFloat.coerceAtLeast(180f)
-                // Account for lithium-ion constant-voltage taper above 80%
-                val taperFactor = if (osPercent >= 80) 1.18f else 1.05f
-                ((remainingMah / effectiveMa) * 60f * taperFactor).roundToInt().coerceIn(1, 999)
+                val osMillis = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    runCatching { bm?.computeChargeTimeRemaining() ?: -1L }.getOrDefault(-1L)
+                } else {
+                    -1L
+                }
+                if (osMillis > 60_000L) {
+                    (osMillis / 60_000L).toInt().coerceIn(1, 999)
+                } else {
+                    val equivMa = (if (effectiveDualCell) absMaFloat * 2f else absMaFloat).coerceAtLeast(200f)
+                    val remainingMah = effectiveFullMah * ((100f - exactPercent).coerceAtLeast(0.5f) / 100f)
+                    ((remainingMah / equivMa) * 60f * 1.05f).roundToInt().coerceIn(1, 999)
+                }
             }
 
             val hours = totalMinutes / 60
@@ -650,9 +693,15 @@ object PowerTelemetryEngine {
             }
             return "$shortStr Estimate" to shortStr
         } else {
-            val remainingMah = effectiveFullMah * (exactPercent.coerceAtLeast(1f) / 100f)
-            val drawMa = absMaFloat.coerceAtLeast(160f)
-            val totalMinutes = ((remainingMah / drawMa) * 60f).roundToInt().coerceIn(5, 72 * 60)
+            val remainingFraction = (exactPercent.coerceAtLeast(1f)) / 100f
+            val totalMinutes = if (watts >= 0.4f) {
+                val remainingWh = packEnergyWh * remainingFraction
+                ((remainingWh / watts) * 60f).roundToInt().coerceIn(5, 72 * 60)
+            } else {
+                val equivDrawMa = (if (effectiveDualCell) absMaFloat * 2f else absMaFloat).coerceAtLeast(160f)
+                val remainingMah = effectiveFullMah * remainingFraction
+                ((remainingMah / equivDrawMa) * 60f).roundToInt().coerceIn(5, 72 * 60)
+            }
             val hours = totalMinutes / 60
             val mins = totalMinutes % 60
             val shortStr = when {
@@ -664,4 +713,6 @@ object PowerTelemetryEngine {
             return "$shortStr Remaining" to shortStr
         }
     }
+
+    private const val NOMINAL_CELL_VOLTAGE_V = 3.85f
 }

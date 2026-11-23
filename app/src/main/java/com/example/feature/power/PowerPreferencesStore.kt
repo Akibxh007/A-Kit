@@ -24,6 +24,7 @@ class PowerPreferencesStore(private val context: Context) {
     private object Keys {
         val TEMP_UNIT = stringPreferencesKey("temp_unit")
         val DUAL_CELL = booleanPreferencesKey("dual_cell")
+        val DUAL_CELL_USER_OVERRIDDEN = booleanPreferencesKey("dual_cell_user_overridden")
         val DESIGN_CAPACITY_MAH = intPreferencesKey("design_capacity_mah")
         val HUD_ENABLED = booleanPreferencesKey("hud_enabled")
         val HUD_OPACITY = floatPreferencesKey("hud_opacity")
@@ -48,6 +49,7 @@ class PowerPreferencesStore(private val context: Context) {
             PowerSettings(
                 tempUnit = TempUnit.fromKey(p[Keys.TEMP_UNIT]),
                 dualCellMode = p[Keys.DUAL_CELL] ?: false,
+                dualCellUserOverridden = p[Keys.DUAL_CELL_USER_OVERRIDDEN] ?: false,
                 designCapacityMah = p[Keys.DESIGN_CAPACITY_MAH] ?: detectHardwareDesignCapacity(context),
                 hudEnabled = p[Keys.HUD_ENABLED] ?: false,
                 hudOpacity = (p[Keys.HUD_OPACITY] ?: 0.88f).coerceIn(0.4f, 1.0f),
@@ -80,6 +82,7 @@ class PowerPreferencesStore(private val context: Context) {
             val current = PowerSettings(
                 tempUnit = TempUnit.fromKey(p[Keys.TEMP_UNIT]),
                 dualCellMode = p[Keys.DUAL_CELL] ?: false,
+                dualCellUserOverridden = p[Keys.DUAL_CELL_USER_OVERRIDDEN] ?: false,
                 designCapacityMah = p[Keys.DESIGN_CAPACITY_MAH] ?: detectHardwareDesignCapacity(context),
                 hudEnabled = p[Keys.HUD_ENABLED] ?: false,
                 hudOpacity = (p[Keys.HUD_OPACITY] ?: 0.88f).coerceIn(0.4f, 1.0f),
@@ -96,6 +99,7 @@ class PowerPreferencesStore(private val context: Context) {
             val updated = transform(current)
             p[Keys.TEMP_UNIT] = updated.tempUnit.key
             p[Keys.DUAL_CELL] = updated.dualCellMode
+            p[Keys.DUAL_CELL_USER_OVERRIDDEN] = updated.dualCellUserOverridden
             p[Keys.DESIGN_CAPACITY_MAH] = updated.designCapacityMah
             p[Keys.HUD_ENABLED] = updated.hudEnabled
             p[Keys.HUD_OPACITY] = updated.hudOpacity

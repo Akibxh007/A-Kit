@@ -49,7 +49,9 @@ class PowerViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setDualCellMode(enabled: Boolean) {
-        PowerTelemetryEngine.updateSettings { it.copy(dualCellMode = enabled) }
+        PowerTelemetryEngine.updateSettings {
+            it.copy(dualCellMode = enabled, dualCellUserOverridden = true)
+        }
     }
 
     fun setDesignCapacityMah(capacityMah: Int) {

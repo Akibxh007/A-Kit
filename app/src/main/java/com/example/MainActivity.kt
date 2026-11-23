@@ -42,6 +42,6 @@ class MainActivity : ComponentActivity() {
     private fun extractDropUrl(intent: Intent?): String? {
         if (intent?.action != Intent.ACTION_VIEW) return null
         val raw = intent.dataString ?: return null
-        return DropUrlParser.normalizeDropTargetUrl(raw)
+        return if (DropUrlParser.parseQrPayload(raw) != null) raw else null
     }
 }

@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Description
@@ -57,6 +58,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -154,10 +156,24 @@ fun DropScreen(
         }
     }
 
-    val qrBitmap: Bitmap? = remember(state.serverUrl, state.isServerRunning) {
-        val url = state.serverUrl
-        if (state.isServerRunning && !url.isNullOrBlank()) {
-            DropQrGenerator.generateQrBitmap(content = url, pixelSize = 512)
+    val hotspotPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.values.all { it }) {
+            viewModel.startOfflineHotspot()
+        } else {
+            Toast.makeText(
+                context,
+                "Nearby Wi-Fi permission is needed for 1-tap Offline Hotspot. You can still use Portable Hotspot.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    val qrBitmap: Bitmap? = remember(state.activeQrContent, state.isServerRunning) {
+        val payload = state.activeQrContent
+        if (state.isServerRunning && !payload.isNullOrBlank()) {
+            DropQrGenerator.generateQrBitmap(content = payload, pixelSize = 512)
         } else {
             null
         }
@@ -392,26 +408,78 @@ fun DropScreen(
                             )
                         }
 
-                        FilledTonalButton(
-                            onClick = { showQrScanner = true },
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("drop_scan_qr_connect_button"),
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.QrCodeScanner,
-                                contentDescription = null,
-                                modifier = Modifier.size(19.dp),
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Scan QR to Connect",
-                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                                maxLines = 1,
-                                softWrap = false,
-                            )
+                            FilledTonalButton(
+                                onClick = { showQrScanner = true },
+                                shape = RoundedCornerShape(16.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("drop_scan_qr_connect_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.QrCodeScanner,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Scan QR",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    if (state.isLocalHotspotActive) {
+                                        viewModel.stopOfflineHotspot()
+                                    } else if (DropOfflineWifiManager.hasHotspotPermission(context)) {
+                                        viewModel.startOfflineHotspot()
+                                    } else {
+                                        hotspotPermissionLauncher.launch(
+                                            DropOfflineWifiManager.requiredHotspotPermissions(),
+                                        )
+                                    }
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (state.isLocalHotspotActive) {
+                                        MaterialTheme.colorScheme.secondary
+                                    } else {
+                                        MaterialTheme.colorScheme.outlineVariant
+                                    },
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("drop_offline_hotspot_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.WifiTethering,
+                                    contentDescription = null,
+                                    tint = if (state.isLocalHotspotActive) {
+                                        MaterialTheme.colorScheme.secondary
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (state.isLocalHotspotActive) "Stop Hotspot" else "Offline Hotspot",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
                         }
                     }
                 }
@@ -472,6 +540,43 @@ fun DropScreen(
                         }
 
                         if (qrBitmap != null && state.serverUrl != null) {
+                            // Mode switcher when Offline Hotspot is active: A-Kit 1-Tap Auto-Join vs Browser URL
+                            if (state.isLocalHotspotActive && !state.hotspotSsid.isNullOrBlank()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    FilterChip(
+                                        selected = state.useAutoConnectQr,
+                                        onClick = { viewModel.setUseAutoConnectQr(true) },
+                                        label = {
+                                            Text(
+                                                text = "A-Kit 1-Tap QR",
+                                                maxLines = 1,
+                                                softWrap = false,
+                                            )
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("drop_qr_mode_autoconnect"),
+                                    )
+                                    FilterChip(
+                                        selected = !state.useAutoConnectQr,
+                                        onClick = { viewModel.setUseAutoConnectQr(false) },
+                                        label = {
+                                            Text(
+                                                text = "Browser URL QR",
+                                                maxLines = 1,
+                                                softWrap = false,
+                                            )
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("drop_qr_mode_browser"),
+                                    )
+                                }
+                            }
+
                             Surface(
                                 shape = RoundedCornerShape(20.dp),
                                 color = Color.White,
@@ -486,6 +591,68 @@ fun DropScreen(
                                         .padding(10.dp)
                                         .testTag("drop_qr_bitmap_image"),
                                 )
+                            }
+
+                            // Active Offline Hotspot Credentials Box (for PC / manual join)
+                            if (state.isLocalHotspotActive && !state.hotspotSsid.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "OFFLINE HOTSPOT ACTIVE (NO DATA NEEDED)",
+                                                style = MonoLabelStyle,
+                                                color = MaterialTheme.colorScheme.secondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            Text(
+                                                text = "Wi-Fi: ${state.hotspotSsid}",
+                                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            if (!state.hotspotPassword.isNullOrBlank()) {
+                                                Text(
+                                                    text = "Pass: ${state.hotspotPassword}",
+                                                    style = MonoLabelStyle,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                        if (!state.hotspotPassword.isNullOrBlank()) {
+                                            IconButton(
+                                                onClick = {
+                                                    copyToClipboard(
+                                                        context,
+                                                        "Hotspot Password",
+                                                        state.hotspotPassword.orEmpty(),
+                                                    )
+                                                },
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.ContentCopy,
+                                                    contentDescription = "Copy hotspot password",
+                                                    tint = MaterialTheme.colorScheme.secondary,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             Surface(
@@ -540,7 +707,7 @@ fun DropScreen(
                             }
                         } else {
                             Text(
-                                text = "Server is listening on port ${state.serverPort}, waiting for a local Wi-Fi or Hotspot IPv4 address. Connect to Wi-Fi or turn on Mobile Hotspot, then tap refresh.",
+                                text = "Server is listening on port ${state.serverPort}, waiting for a local Wi-Fi or Hotspot IPv4 address. Tap Offline Hotspot above, turn on Portable Hotspot, or join Wi-Fi, then tap refresh.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -548,6 +715,14 @@ fun DropScreen(
                     }
                 }
             }
+        }
+
+        // 2B. Beginner-Friendly Offline Hotspot / PC Mode Helper Tip Card
+        item(key = "drop_offline_hotspot_guide") {
+            OfflineHotspotPcGuideCard(
+                displayedUrl = state.serverUrl ?: "http://192.168.x.x:${state.serverPort}",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
         }
 
         // 3. Quick Text & Snippet Drop Section
@@ -759,11 +934,113 @@ fun DropScreen(
     // Built-in Offline CameraX + ZXing QR Scanner Sheet
     if (showQrScanner) {
         DropQrScannerSheet(
-            onScannedUrl = { targetUrl ->
+            onScannedPayload = { payload ->
                 showQrScanner = false
-                viewModel.connectToPeerUrl(targetUrl)
+                viewModel.connectFromQrPayload(payload)
             },
             onDismiss = { showQrScanner = false },
+        )
+    }
+}
+
+@Composable
+private fun OfflineHotspotPcGuideCard(
+    displayedUrl: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("drop_offline_hotspot_guide_card"),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = 1.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f),
+                ) {
+                    Box(
+                        modifier = Modifier.size(36.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Computer,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Offline Hotspot / PC Mode",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "ZERO INTERNET OR MOBILE DATA REQUIRED",
+                        style = MonoLabelStyle,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
+            }
+
+            OfflineGuideStepRow(
+                stepNumber = "1",
+                text = "Tap Offline Hotspot above or turn on Portable Hotspot (keep Mobile Data OFF — zero data is used).",
+            )
+            OfflineGuideStepRow(
+                stepNumber = "2",
+                text = "Connect your PC or second phone to the hotspot, or scan the QR inside A-Kit for 1-tap auto-join.",
+            )
+            OfflineGuideStepRow(
+                stepNumber = "3",
+                text = "Open $displayedUrl in any browser on PC/Mac/iPhone or transfer directly inside A-Kit.",
+            )
+        }
+    }
+}
+
+@Composable
+private fun OfflineGuideStepRow(
+    stepNumber: String,
+    text: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.size(22.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = stepNumber,
+                    style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -836,6 +1113,15 @@ private fun ConnectedPeerHubCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        if (!state.connectedWifiSsid.isNullOrBlank()) {
+                            Text(
+                                text = "HOTSPOT: ${state.connectedWifiSsid}",
+                                style = MonoLabelStyle,
+                                color = MaterialTheme.colorScheme.secondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.width(8.dp))

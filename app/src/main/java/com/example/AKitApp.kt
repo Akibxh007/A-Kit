@@ -158,7 +158,7 @@ fun AKitApp(
         if (!incomingDropUrl.isNullOrBlank()) {
             appliedStartupTab = true
             currentDestination = AKitDestination.DROP
-            dropViewModel.connectToPeerUrl(incomingDropUrl)
+            dropViewModel.connectFromRawPayload(incomingDropUrl)
             onConsumeIncomingDropUrl()
         }
     }

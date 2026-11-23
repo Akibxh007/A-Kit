@@ -32,8 +32,16 @@ private data class NetworkSnapshot(
     val localIp: String?,
 )
 
+private data class HotspotState(
+    val isActive: Boolean = false,
+    val ssid: String? = null,
+    val password: String? = null,
+    val useAutoConnectQr: Boolean = true,
+)
+
 private data class PeerClientState(
     val peerUrl: String? = null,
+    val wifiSsid: String? = null,
     val isConnecting: Boolean = false,
     val isConnected: Boolean = false,
     val snippets: List<DropSnippet> = emptyList(),
@@ -48,7 +56,8 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     private val connectivityManager =
         application.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
-    private val networkSnapshot = MutableStateFlow(readNetworkSnapshot())
+    private val hotspotState = MutableStateFlow(HotspotState())
+    private val networkSnapshot = MutableStateFlow(readNetworkSnapshot(preferHotspot = false))
     private val statusBanner = MutableStateFlow<String?>(null)
     private val peerState = MutableStateFlow(PeerClientState())
     private val deviceName = resolveDeviceName()
@@ -63,6 +72,13 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         ServerMeta(running, port, peers, idleMsg)
     }
 
+    private val networkAndHotspotFlow = combine(
+        networkSnapshot,
+        hotspotState,
+    ) { net, hotspot ->
+        net to hotspot
+    }
+
     private val localContentFlow = combine(
         DropHubCoordinator.snippets,
         DropHubCoordinator.sharedFiles,
@@ -73,14 +89,18 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
 
     val uiState: StateFlow<DropUiState> = combine(
         serverMetaFlow,
-        networkSnapshot,
+        networkAndHotspotFlow,
         localContentFlow,
         peerState,
-    ) { meta, net, (snippets, files, banner), peer ->
+    ) { meta, (net, hotspot), (snippets, files, banner), peer ->
         DropUiState(
             isServerRunning = meta.running,
             isWifiEnabled = net.isWifiEnabled,
             isWifiConnected = net.isWifiConnected,
+            isLocalHotspotActive = hotspot.isActive,
+            hotspotSsid = hotspot.ssid,
+            hotspotPassword = hotspot.password,
+            useAutoConnectQr = hotspot.useAutoConnectQr,
             localIpAddress = net.localIp,
             serverPort = meta.port,
             deviceBeaconName = deviceName,
@@ -88,6 +108,7 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
             snippets = snippets,
             sharedFiles = files,
             connectedPeerUrl = peer.peerUrl,
+            connectedWifiSsid = peer.wifiSsid,
             isPeerConnecting = peer.isConnecting,
             isPeerConnected = peer.isConnected,
             peerSnippets = peer.snippets,
@@ -134,7 +155,7 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshNetwork() {
-        networkSnapshot.value = readNetworkSnapshot()
+        networkSnapshot.value = readNetworkSnapshot(preferHotspot = hotspotState.value.isActive)
     }
 
     fun dismissBanner() {
@@ -147,6 +168,9 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         DropHubCoordinator.clearIdleShutdownMessage()
         if (DropHubCoordinator.isServerRunning.value) {
             DropServerService.stop(getApplication())
+            if (hotspotState.value.isActive) {
+                stopOfflineHotspot(silent = true)
+            }
             statusBanner.value = "Local Drop Server stopped."
         } else {
             DropServerService.start(getApplication())
@@ -154,9 +178,58 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
             statusBanner.value = if (ip != null) {
                 "Local Drop Server live at http://$ip:${DropHubCoordinator.boundPort.value}"
             } else {
-                "Local Drop Server started. Connect to Wi-Fi or enable Mobile Hotspot to share."
+                "Local Drop Server started. Connect to Wi-Fi, turn on Portable Hotspot, or tap Offline Hotspot."
             }
         }
+    }
+
+    // --- 1-Tap Offline Local-Only Hotspot (Zero Internet Required) ---
+
+    fun startOfflineHotspot() {
+        DropHubCoordinator.clearIdleShutdownMessage()
+        statusBanner.value = "Starting 100% offline local hotspot..."
+        DropOfflineWifiManager.startLocalOnlyHotspot(
+            context = getApplication(),
+            onStarted = { ssid, password ->
+                hotspotState.value = HotspotState(
+                    isActive = true,
+                    ssid = ssid,
+                    password = password,
+                    useAutoConnectQr = true,
+                )
+                if (!DropHubCoordinator.isServerRunning.value) {
+                    DropServerService.start(getApplication())
+                }
+                statusBanner.value = "Offline Hotspot \"$ssid\" is live! Scan the QR inside A-Kit on another phone for 1-tap connect."
+                viewModelScope.launch(Dispatchers.IO) {
+                    listOf(350L, 900L, 1_800L).forEach { waitMs ->
+                        delay(waitMs)
+                        refreshNetwork()
+                    }
+                }
+            },
+            onStopped = {
+                hotspotState.value = HotspotState()
+                refreshNetwork()
+            },
+            onError = { errorMsg ->
+                hotspotState.value = HotspotState()
+                statusBanner.value = errorMsg
+            },
+        )
+    }
+
+    fun stopOfflineHotspot(silent: Boolean = false) {
+        DropOfflineWifiManager.stopLocalOnlyHotspot()
+        hotspotState.value = HotspotState()
+        refreshNetwork()
+        if (!silent) {
+            statusBanner.value = "Offline Hotspot stopped."
+        }
+    }
+
+    fun setUseAutoConnectQr(enabled: Boolean) {
+        hotspotState.update { it.copy(useAutoConnectQr = enabled) }
     }
 
     fun sendSnippetToPortal(text: String) {
@@ -185,32 +258,112 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Native In-App Peer Client Mode (QR Scan / akit://drop Deep Link) ---
+    // --- Native In-App Peer Client Mode (QR Scan / Offline Hotspot Auto-Join / Deep Link) ---
 
-    fun connectToPeerUrl(rawUrl: String) {
-        val normalized = DropUrlParser.normalizeDropTargetUrl(rawUrl)
-        if (normalized == null) {
+    fun connectFromRawPayload(raw: String) {
+        val parsed = DropUrlParser.parseQrPayload(raw)
+        if (parsed == null) {
+            statusBanner.value = "Invalid A-Kit Drop QR or URL."
+            return
+        }
+        connectFromQrPayload(parsed)
+    }
+
+    fun connectFromQrPayload(payload: DropQrPayload) {
+        peerPollingJob?.cancel()
+        peerPollingJob = null
+
+        if (payload.hasWifiCredentials) {
+            val ssid = payload.wifiSsid.orEmpty()
+            val primaryTarget = payload.serverUrl ?: "http://192.168.43.1:8080"
+            val fallbackTarget = if (payload.serverUrl == null) "http://192.168.49.1:8080" else null
+
+            peerState.value = PeerClientState(
+                peerUrl = primaryTarget,
+                wifiSsid = ssid,
+                isConnecting = true,
+                isConnected = false,
+            )
+            statusBanner.value = "Joining offline hotspot \"$ssid\"..."
+
+            DropOfflineWifiManager.connectToHotspot(
+                context = getApplication(),
+                ssid = ssid,
+                password = payload.wifiPassword,
+                onConnected = { boundNetwork ->
+                    statusBanner.value = "Joined \"$ssid\"! Opening offline Drop session..."
+                    startPeerPolling(
+                        primaryUrl = primaryTarget,
+                        fallbackUrl = fallbackTarget,
+                        boundNetwork = boundNetwork,
+                        initialDelayMs = 650L,
+                    )
+                },
+                onFailed = { errorMsg ->
+                    peerState.update { it.copy(isConnecting = false, isConnected = false) }
+                    statusBanner.value = errorMsg
+                },
+            )
+            return
+        }
+
+        val targetUrl = payload.serverUrl
+        if (targetUrl == null) {
             statusBanner.value = "Invalid A-Kit Drop URL."
             return
         }
-        peerPollingJob?.cancel()
+
+        DropOfflineWifiManager.disconnectBoundNetwork(getApplication())
         peerState.value = PeerClientState(
-            peerUrl = normalized,
+            peerUrl = targetUrl,
+            wifiSsid = null,
             isConnecting = true,
             isConnected = false,
         )
-        statusBanner.value = "Connecting to peer at $normalized..."
+        statusBanner.value = "Connecting to peer at $targetUrl..."
+        startPeerPolling(
+            primaryUrl = targetUrl,
+            fallbackUrl = null,
+            boundNetwork = null,
+            initialDelayMs = 0L,
+        )
+    }
 
+    fun connectToPeerUrl(rawUrl: String) {
+        connectFromRawPayload(rawUrl)
+    }
+
+    private fun startPeerPolling(
+        primaryUrl: String,
+        fallbackUrl: String?,
+        boundNetwork: Network?,
+        initialDelayMs: Long,
+    ) {
+        peerPollingJob?.cancel()
         peerPollingJob = viewModelScope.launch(Dispatchers.IO) {
+            if (initialDelayMs > 0L) {
+                delay(initialDelayMs)
+            }
+            var activeUrl = primaryUrl
             var consecutiveFailures = 0
             while (isActive) {
-                val result = DropPeerClient.fetchState(normalized)
+                var result = DropPeerClient.fetchState(activeUrl, boundNetwork)
+                if (result.isFailure && fallbackUrl != null && activeUrl == primaryUrl) {
+                    val altResult = DropPeerClient.fetchState(fallbackUrl, boundNetwork)
+                    if (altResult.isSuccess) {
+                        activeUrl = fallbackUrl
+                        peerState.update { it.copy(peerUrl = fallbackUrl) }
+                        result = altResult
+                    }
+                }
+
                 if (result.isSuccess) {
                     val payload = result.getOrThrow()
                     val firstConnect = !peerState.value.isConnected
                     consecutiveFailures = 0
                     peerState.update {
                         it.copy(
+                            peerUrl = activeUrl,
                             isConnecting = false,
                             isConnected = true,
                             snippets = payload.snippets,
@@ -218,13 +371,13 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     if (firstConnect) {
-                        statusBanner.value = "Connected natively to $normalized"
+                        statusBanner.value = "Connected natively to $activeUrl"
                     }
                 } else {
                     consecutiveFailures += 1
                     if (consecutiveFailures >= 3) {
                         peerState.update { it.copy(isConnecting = false, isConnected = false) }
-                        statusBanner.value = "Cannot reach $normalized. Ensure both devices are on the same Wi-Fi or Hotspot."
+                        statusBanner.value = "Cannot reach $activeUrl. Ensure both devices are on the same Wi-Fi or Hotspot."
                     }
                 }
                 delay(2_500L)
@@ -235,6 +388,7 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnectPeer() {
         peerPollingJob?.cancel()
         peerPollingJob = null
+        DropOfflineWifiManager.disconnectBoundNetwork(getApplication())
         peerState.value = PeerClientState()
         statusBanner.value = "Disconnected from remote Drop peer."
     }
@@ -243,11 +397,12 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         val url = peerState.value.peerUrl ?: return
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        val boundNet = DropOfflineWifiManager.activeBoundNetwork
         viewModelScope.launch(Dispatchers.IO) {
-            val res = DropPeerClient.sendSnippet(url, trimmed)
+            val res = DropPeerClient.sendSnippet(url, trimmed, boundNet)
             if (res.isSuccess) {
                 statusBanner.value = "Snippet sent to peer."
-                DropPeerClient.fetchState(url).getOrNull()?.let { payload ->
+                DropPeerClient.fetchState(url, boundNet).getOrNull()?.let { payload ->
                     peerState.update { it.copy(snippets = payload.snippets, files = payload.files) }
                 }
             } else {
@@ -259,17 +414,18 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     fun uploadFilesToPeer(uris: List<Uri>) {
         val url = peerState.value.peerUrl ?: return
         if (uris.isEmpty()) return
+        val boundNet = DropOfflineWifiManager.activeBoundNetwork
         viewModelScope.launch(Dispatchers.IO) {
             statusBanner.value = "Uploading ${uris.size} item(s) to peer..."
             var successCount = 0
             uris.forEach { uri ->
-                if (DropPeerClient.uploadUri(getApplication(), url, uri).isSuccess) {
+                if (DropPeerClient.uploadUri(getApplication(), url, uri, boundNet).isSuccess) {
                     successCount++
                 }
             }
             if (successCount > 0) {
                 statusBanner.value = "Uploaded $successCount item(s) to peer's Downloads/A-Kit."
-                DropPeerClient.fetchState(url).getOrNull()?.let { payload ->
+                DropPeerClient.fetchState(url, boundNet).getOrNull()?.let { payload ->
                     peerState.update { it.copy(snippets = payload.snippets, files = payload.files) }
                 }
             } else {
@@ -280,9 +436,10 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
 
     fun downloadPeerFile(item: PeerFileItem) {
         val url = peerState.value.peerUrl ?: return
+        val boundNet = DropOfflineWifiManager.activeBoundNetwork
         viewModelScope.launch(Dispatchers.IO) {
             peerState.update { it.copy(downloadingFileId = item.id) }
-            val result = DropPeerClient.downloadFileToDownloads(getApplication(), url, item)
+            val result = DropPeerClient.downloadFileToDownloads(getApplication(), url, item, boundNet)
             peerState.update { it.copy(downloadingFileId = null) }
             statusBanner.value = if (result.isSuccess) {
                 "Saved \"${item.fileName}\" to Downloads/A-Kit."
@@ -292,14 +449,14 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun readNetworkSnapshot(): NetworkSnapshot {
+    private fun readNetworkSnapshot(preferHotspot: Boolean): NetworkSnapshot {
         val wifiEnabled = runCatching { wifiManager?.isWifiEnabled == true }.getOrDefault(false)
         val wifiConnected = runCatching {
             val activeNetwork = connectivityManager?.activeNetwork
             val caps = connectivityManager?.getNetworkCapabilities(activeNetwork)
             caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
         }.getOrDefault(false)
-        val ip = LocalNetworkUtils.detectLocalIpv4Address()
+        val ip = LocalNetworkUtils.detectLocalIpv4Address(preferHotspotInterface = preferHotspot)
         return NetworkSnapshot(
             isWifiEnabled = wifiEnabled,
             isWifiConnected = wifiConnected,
@@ -320,6 +477,8 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         peerPollingJob?.cancel()
+        DropOfflineWifiManager.disconnectBoundNetwork(getApplication())
+        DropOfflineWifiManager.stopLocalOnlyHotspot()
         runCatching { getApplication<Application>().unregisterReceiver(wifiStateReceiver) }
         runCatching { connectivityManager?.unregisterNetworkCallback(networkCallback) }
         super.onCleared()

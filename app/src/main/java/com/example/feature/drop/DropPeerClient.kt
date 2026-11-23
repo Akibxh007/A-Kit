@@ -1,6 +1,7 @@
 package com.example.feature.drop
 
 import android.content.Context
+import android.net.Network
 import android.net.Uri
 import android.provider.OpenableColumns
 import org.json.JSONObject
@@ -16,16 +17,31 @@ data class PeerStatePayload(
 
 /**
  * 100% offline LAN HTTP client allowing an A-Kit device to connect natively to another
- * A-Kit Drop server via QR scan or akit://drop deep link.
+ * A-Kit Drop server via QR scan, offline hotspot auto-connect, or `akit://drop` deep link.
+ *
+ * Supports optional [Network] binding so HTTP traffic routes directly through a local-only
+ * hotspot even when the network has zero internet access (preventing ERR_INTERNET_DISCONNECTED).
  */
 object DropPeerClient {
 
     private const val CONNECT_TIMEOUT_MS = 4_500
     private const val READ_TIMEOUT_MS = 12_000
 
-    fun fetchState(baseUrl: String): Result<PeerStatePayload> = runCatching {
+    private fun openConnection(url: URL, boundNetwork: Network?): HttpURLConnection {
+        val raw = if (boundNetwork != null) {
+            boundNetwork.openConnection(url)
+        } else {
+            url.openConnection()
+        }
+        return raw as HttpURLConnection
+    }
+
+    fun fetchState(
+        baseUrl: String,
+        boundNetwork: Network? = null,
+    ): Result<PeerStatePayload> = runCatching {
         val cleanBase = baseUrl.trimEnd('/')
-        val conn = (URL("$cleanBase/api/state").openConnection() as HttpURLConnection).apply {
+        val conn = openConnection(URL("$cleanBase/api/state"), boundNetwork).apply {
             requestMethod = "GET"
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
@@ -81,10 +97,14 @@ object DropPeerClient {
         }
     }
 
-    fun sendSnippet(baseUrl: String, text: String): Result<Unit> = runCatching {
+    fun sendSnippet(
+        baseUrl: String,
+        text: String,
+        boundNetwork: Network? = null,
+    ): Result<Unit> = runCatching {
         val cleanBase = baseUrl.trimEnd('/')
         val payload = text.trim().toByteArray(Charsets.UTF_8)
-        val conn = (URL("$cleanBase/api/snippets").openConnection() as HttpURLConnection).apply {
+        val conn = openConnection(URL("$cleanBase/api/snippets"), boundNetwork).apply {
             requestMethod = "POST"
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
@@ -103,7 +123,12 @@ object DropPeerClient {
         }
     }
 
-    fun uploadUri(context: Context, baseUrl: String, uri: Uri): Result<String> = runCatching {
+    fun uploadUri(
+        context: Context,
+        baseUrl: String,
+        uri: Uri,
+        boundNetwork: Network? = null,
+    ): Result<String> = runCatching {
         val resolver = context.contentResolver
         var displayName = "Drop_${System.currentTimeMillis()}"
         var sizeBytes = -1L
@@ -131,7 +156,7 @@ object DropPeerClient {
         require(contentLength > 0L) { "Unable to read selected file" }
 
         val cleanBase = baseUrl.trimEnd('/')
-        val conn = (URL("$cleanBase/api/upload").openConnection() as HttpURLConnection).apply {
+        val conn = openConnection(URL("$cleanBase/api/upload"), boundNetwork).apply {
             requestMethod = "POST"
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = 60_000
@@ -171,10 +196,11 @@ object DropPeerClient {
         context: Context,
         baseUrl: String,
         item: PeerFileItem,
+        boundNetwork: Network? = null,
     ): Result<DropFileItem> = runCatching {
         val cleanBase = baseUrl.trimEnd('/')
         val encodedId = URLEncoder.encode(item.id, "UTF-8")
-        val conn = (URL("$cleanBase/api/files/$encodedId").openConnection() as HttpURLConnection).apply {
+        val conn = openConnection(URL("$cleanBase/api/files/$encodedId"), boundNetwork).apply {
             requestMethod = "GET"
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = 60_000

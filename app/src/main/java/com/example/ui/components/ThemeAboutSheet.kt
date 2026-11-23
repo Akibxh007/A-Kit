@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Bedtime
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.rounded.Contrast
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Notifications
@@ -49,6 +51,8 @@ import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SettingsBrightness
 import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -59,11 +63,13 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -141,6 +147,7 @@ fun SettingsModalSheet(
     val supportsDynamicColor = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
     var refreshTick by remember { mutableIntStateOf(0) }
+    var showRestrictedOverlayGuide by remember { mutableStateOf(false) }
     val permStatus = remember(context, refreshTick) { readPermissionStatus(context) }
 
     // Automatically refresh permission badges when returning from Android System Settings
@@ -352,14 +359,18 @@ fun SettingsModalSheet(
                     InteractivePermissionRow(
                         icon = Icons.Rounded.Layers,
                         title = "Display Over Other Apps",
-                        subtitle = "Floating wattage & thermal HUD pill",
+                        subtitle = if (!permStatus.overlayGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            "Floating HUD pill • Includes Android 13–15 unlock guide"
+                        } else {
+                            "Floating wattage & thermal HUD pill"
+                        },
                         granted = permStatus.overlayGranted,
                         onClick = {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}"),
-                            )
-                            runCatching { context.startActivity(intent) }
+                            if (!permStatus.overlayGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                showRestrictedOverlayGuide = true
+                            } else {
+                                openOverlaySettings(context)
+                            }
                         },
                         testTag = "perm_row_overlay",
                     )
@@ -516,7 +527,7 @@ fun SettingsModalSheet(
                 }
             }
 
-            // 4. Community & Open Source Section
+            // 4. Community & Open Source Section (Separate Telegram & Facebook Cards + GitHub)
             SettingsSectionLabel(text = "COMMUNITY & OPEN SOURCE")
             Surface(
                 shape = RoundedCornerShape(24.dp),
@@ -529,10 +540,21 @@ fun SettingsModalSheet(
                         .padding(vertical = 6.dp),
                 ) {
                     CommunityLinkRow(
+                        icon = Icons.AutoMirrored.Rounded.Send,
+                        title = "Join Telegram Channel",
+                        subtitle = "t.me/akitofficial • Instant releases & changelogs",
+                        onClick = { openExternalUrl(context, "https://t.me/akitofficial") },
+                        testTag = "link_community_telegram",
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                    CommunityLinkRow(
                         icon = Icons.Rounded.Groups,
-                        title = "Join Official Community",
-                        subtitle = "Facebook Group • Tips, updates & requests",
-                        onClick = { openExternalUrl(context, "https://facebook.com/groups/akit.community") },
+                        title = "Join Facebook Group",
+                        subtitle = "Official A-Kit Community • Tips, Q&A & feature polls",
+                        onClick = { openExternalUrl(context, "https://www.facebook.com/share/g/1HR7V3uKUV/") },
                         testTag = "link_community_facebook",
                     )
                     HorizontalDivider(
@@ -636,6 +658,82 @@ fun SettingsModalSheet(
                 )
             }
         }
+    }
+
+    // Android 13–15 Restricted Settings 2-Step Unlock Helper Dialog for Overlay Permission
+    if (showRestrictedOverlayGuide) {
+        AlertDialog(
+            onDismissRequest = { showRestrictedOverlayGuide = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Rounded.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            },
+            title = {
+                Text(
+                    text = "Unlock Overlay on Android 13–15",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Android blocks \"Display over other apps\" for sideloaded APKs until you allow restricted settings:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = "1. Open App Info -> tap the 3-dot menu (⋮) at the top-right (or scroll to the bottom on Xiaomi / HyperOS) -> select \"Allow restricted settings\".",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "2. Then open Overlay Settings and turn ON \"Display over other apps\" for A-Kit.",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showRestrictedOverlayGuide = false
+                        openOverlaySettings(context)
+                    },
+                    modifier = Modifier.testTag("restricted_guide_open_overlay_button"),
+                ) {
+                    Text("Overlay Settings")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            showRestrictedOverlayGuide = false
+                            openAppDetailsSettings(context)
+                        },
+                        modifier = Modifier.testTag("restricted_guide_open_app_info_button"),
+                    ) {
+                        Text("Open App Info")
+                    }
+                    TextButton(onClick = { showRestrictedOverlayGuide = false }) {
+                        Text("Cancel")
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -878,6 +976,15 @@ private fun openAppNotificationSettings(context: Context) {
     val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
         putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
     }
+    runCatching { context.startActivity(intent) }
+        .onFailure { openAppDetailsSettings(context) }
+}
+
+private fun openOverlaySettings(context: Context) {
+    val intent = Intent(
+        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+        Uri.parse("package:${context.packageName}"),
+    )
     runCatching { context.startActivity(intent) }
         .onFailure { openAppDetailsSettings(context) }
 }

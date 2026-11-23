@@ -181,12 +181,14 @@ private fun ChargingAodScreen(
 
     var flashlightOn by remember { mutableStateOf(false) }
 
-    // Live digital clock
-    var currentTimeText by remember { mutableStateOf(formatClockNow()) }
+    // Live digital 12-hour clock (clean 11:48 format)
+    var currentTimeText by remember { mutableStateOf(formatClock12HourNow()) }
+    var currentMeridiemText by remember { mutableStateOf(formatMeridiemNow()) }
     var currentDateText by remember { mutableStateOf(formatDateNow()) }
     LaunchedEffect(Unit) {
         while (true) {
-            currentTimeText = formatClockNow()
+            currentTimeText = formatClock12HourNow()
+            currentMeridiemText = formatMeridiemNow()
             currentDateText = formatDateNow()
             delay(1_000L)
         }
@@ -260,18 +262,31 @@ private fun ChargingAodScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            // Clock + Date header
+            // Clock + Date header (12-hour clean format e.g. 11:48)
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = currentTimeText,
-                    fontFamily = SpaceGroteskFontFamily,
-                    fontWeight = FontWeight.Light,
-                    fontSize = 58.sp,
-                    letterSpacing = (-2).sp,
-                    color = Color(0xFFEAF2F8),
-                    maxLines = 1,
-                    softWrap = false,
-                )
+                Row(
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = currentTimeText,
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Light,
+                        fontSize = 60.sp,
+                        letterSpacing = (-2).sp,
+                        color = Color(0xFFEAF2F8),
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                    Text(
+                        text = currentMeridiemText,
+                        style = MonoLabelStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                        color = accent.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
+                }
                 Text(
                     text = currentDateText.uppercase(Locale.US),
                     style = MonoLabelStyle,
@@ -792,8 +807,11 @@ private fun AodTelemetryCompactCard(
     }
 }
 
-private fun formatClockNow(): String =
-    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+private fun formatClock12HourNow(): String =
+    SimpleDateFormat("h:mm", Locale.getDefault()).format(Date())
+
+private fun formatMeridiemNow(): String =
+    SimpleDateFormat("a", Locale.US).format(Date()).uppercase(Locale.US)
 
 private fun formatDateNow(): String =
     SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date())
