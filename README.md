@@ -1,4 +1,5 @@
 <div align="center">
+    <img src="logo.png" alt="A-Kit Logo" width="110" height="110" />
   <h1>⚡ A-Kit</h1>
   <p><strong>100% Offline, Zero-Ads, Material You Native Android Utility Suite</strong></p>
 
