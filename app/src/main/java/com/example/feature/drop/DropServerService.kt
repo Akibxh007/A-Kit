@@ -25,6 +25,7 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -48,7 +49,9 @@ class DropServerService : Service() {
         serviceScope.launch {
             DropHubCoordinator.activePeerCount.collect { peers ->
                 if (DropHubCoordinator.isServerRunning.value) {
-                    val ip = LocalNetworkUtils.detectLocalIpv4Address()
+                    val ip = LocalNetworkUtils.detectLocalIpv4Address(
+                        preferHotspotInterface = DropOfflineWifiManager.isHotspotActive,
+                    )
                     val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                     nm?.notify(NOTIFICATION_ID, buildNotification(ip, boundPort, peers))
                 }
@@ -96,7 +99,9 @@ class DropServerService : Service() {
             boundPort = socket.localPort
             DropHubCoordinator.setServerStatus(running = true, port = boundPort)
 
-            val ip = LocalNetworkUtils.detectLocalIpv4Address()
+            val ip = LocalNetworkUtils.detectLocalIpv4Address(
+                preferHotspotInterface = DropOfflineWifiManager.isHotspotActive,
+            )
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             nm?.notify(NOTIFICATION_ID, buildNotification(ip, boundPort, 0))
 
@@ -126,11 +131,12 @@ class DropServerService : Service() {
     }
 
     private fun bindAvailablePort(): ServerSocket? {
+        val wildcardAllInterfaces = InetAddress.getByName("0.0.0.0")
         for (port in DEFAULT_PORT..(DEFAULT_PORT + 10)) {
             val candidate = runCatching {
                 ServerSocket().apply {
                     reuseAddress = true
-                    bind(InetSocketAddress("0.0.0.0", port))
+                    bind(InetSocketAddress(wildcardAllInterfaces, port), 50)
                 }
             }.getOrNull()
             if (candidate != null) return candidate

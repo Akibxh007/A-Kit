@@ -356,17 +356,20 @@ object LocalNetworkUtils {
     private fun isHotspotGatewayIp(ip: String): Boolean {
         return ip.startsWith("192.168.43.") ||
             ip.startsWith("192.168.49.") ||
+            ip.startsWith("192.168.137.") ||
             (ip.startsWith("192.168.") && ip.endsWith(".1"))
     }
 
     /**
      * Resolves the active Local-Only Hotspot (`AndroidShare_xxxx`) gateway IPv4 address
-     * (e.g. `192.168.43.1` or `192.168.49.1` on `ap0`/`swlan0`/`wlan1`/`wlan0`).
+     * from `ap0`, `ap_br_*`, `swlan0`, `softap0`, `p2p*`, `wlan1`/`wlan2`, or `wlan0`
+     * (including `192.168.43.1`, `192.168.49.1`, `192.168.137.1`, and Android 11+ randomized
+     * `PrivateAddressCoordinator` subnets like `192.168.x.y`).
      *
      * Strictly ignores cellular/mobile-data interfaces and `172.x.x.x` carrier subnets so the
-     * sender QR code NEVER advertises an unreachable mobile-data IP.
+     * sender LAN badge and QR code NEVER advertise an unreachable mobile-data IP.
      */
-    fun detectHotspotGatewayIpv4(): String? {
+    fun detectHotspotGatewayIpv4(preHotspotWlanIp: String? = null): String? {
         return runCatching {
             val candidates = mutableListOf<Pair<Int, String>>()
             val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
@@ -374,7 +377,8 @@ object LocalNetworkUtils {
                 if (!nif.isUp || nif.isLoopback || nif.isVirtual) continue
                 val name = nif.name.lowercase(Locale.US)
                 if (isBlockedInterface(name)) continue
-                val isWifiOrAp = isHotspotApInterface(name) || name.startsWith("wlan")
+                val isApIface = isHotspotApInterface(name)
+                val isWifiOrAp = isApIface || name.startsWith("wlan") || name.startsWith("br")
                 if (!isWifiOrAp) continue
 
                 for (addr in nif.inetAddresses.toList()) {
@@ -382,16 +386,23 @@ object LocalNetworkUtils {
                     val host = addr.hostAddress ?: continue
                     // Never allow cellular/carrier 172.x.x.x subnets for Offline Hotspot
                     if (host.startsWith("172.")) continue
-                    if (!host.startsWith("192.168.") && !(isHotspotApInterface(name) && host.startsWith("10."))) {
+                    if (!host.startsWith("192.168.") && !(isApIface && host.startsWith("10."))) {
                         continue
                     }
 
                     val priority = when {
-                        isHotspotApInterface(name) && isHotspotGatewayIp(host) -> 1
-                        isHotspotApInterface(name) && host.startsWith("192.168.") -> 2
-                        name.startsWith("wlan") && (host.startsWith("192.168.43.") || host.startsWith("192.168.49.")) -> 3
-                        isHotspotApInterface(name) -> 4
-                        name.startsWith("wlan") && host.startsWith("192.168.") && host.endsWith(".1") -> 5
+                        isApIface && isHotspotGatewayIp(host) -> 1
+                        isApIface && host.startsWith("192.168.") -> 2
+                        name.startsWith("wlan") && (
+                            host.startsWith("192.168.43.") ||
+                                host.startsWith("192.168.49.") ||
+                                host.startsWith("192.168.137.")
+                            ) -> 3
+                        isApIface -> 4
+                        name.startsWith("br") && host.startsWith("192.168.") -> 5
+                        name.startsWith("wlan") && host.startsWith("192.168.") && host.endsWith(".1") -> 6
+                        name.startsWith("wlan") && host.startsWith("192.168.") &&
+                            !preHotspotWlanIp.isNullOrBlank() && host != preHotspotWlanIp -> 7
                         else -> 99
                     }
                     if (priority < 99) {

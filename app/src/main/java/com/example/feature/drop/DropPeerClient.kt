@@ -8,6 +8,7 @@ import android.provider.OpenableColumns
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 import java.net.URLEncoder
 
@@ -20,23 +21,23 @@ data class PeerStatePayload(
  * 100% offline LAN HTTP client allowing an A-Kit device to connect natively to another
  * A-Kit Drop server via QR scan, offline hotspot auto-connect, or `akit://drop` deep link.
  *
- * Uses direct 64KB disk-to-socket streaming (`copyTo(out, bufferSize = 65536)`),
- * `setFixedLengthStreamingMode(fileSize)` / `setChunkedStreamingMode(65536)`,
- * `connectTimeout = 15000`, and `readTimeout = 0` (infinite during active stream) so
+ * Uses direct 64KB disk-to-socket streaming, `setFixedLengthStreamingMode(fileSize)` /
+ * `setChunkedStreamingMode(65536)`, `Proxy.NO_PROXY` over the bound `WifiNetworkSpecifier`
+ * [Network], `connectTimeout = 15000`, and `readTimeout = 0` (infinite during active stream) so
  * 300MB–2GB+ transfers run at full Wi-Fi speed without OOM or socket timeouts.
  */
 object DropPeerClient {
 
     private const val STREAM_BUFFER_SIZE = 65_536
-    private const val PING_TIMEOUT_MS = 5_000
+    private const val PING_TIMEOUT_MS = 2_500
     private const val TRANSFER_CONNECT_TIMEOUT_MS = 15_000
     private const val STATE_READ_TIMEOUT_MS = 12_000
 
     private fun openConnection(url: URL, boundNetwork: Network?): HttpURLConnection {
         val raw = if (boundNetwork != null) {
-            boundNetwork.openConnection(url)
+            boundNetwork.openConnection(url, Proxy.NO_PROXY)
         } else {
-            url.openConnection()
+            url.openConnection(Proxy.NO_PROXY)
         }
         return raw as HttpURLConnection
     }

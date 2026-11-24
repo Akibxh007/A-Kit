@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -16,8 +17,14 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.net.Inet4Address
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
+
+data class BoundHotspotConnection(
+    val network: Network,
+    val gatewayIp: String?,
+)
 
 /**
  * 100% offline Wi-Fi Hotspot, Wi-Fi Socket Binding & Peer Auto-Connect manager.
@@ -27,18 +34,26 @@ import kotlin.coroutines.resume
  *   in A-Kit's QR code.
  * - **Receiver**: Joins a scanned hotspot automatically on Android 10+ via `WifiNetworkSpecifier`
  *   inside a ViewModel-scoped coroutine, keeping the `ConnectivityManager.NetworkCallback` alive
- *   across the entire session until explicit disconnect or ViewModel teardown.
- * - **Explicit Wi-Fi Socket Routing**: [findActiveWifiNetwork] resolves any active `TRANSPORT_WIFI`
- *   [Network] so local LAN HTTP requests (`http://192.168.x.x:8080`) always traverse Wi-Fi/Hotspot
- *   rather than Mobile Data when the Wi-Fi link has no internet access.
+ *   across the entire session until explicit disconnect or ViewModel teardown, and dynamically
+ *   extracting the hotspot host gateway IP from `LinkProperties` (`dhcpServerAddress` / `routes`).
+ * - **Explicit Wi-Fi Socket Routing**: [findActiveWifiNetwork] resolves the bound `specifierNetwork`
+ *   or any active `TRANSPORT_WIFI` [Network] so local LAN HTTP requests always traverse Wi-Fi/Hotspot
+ *   rather than Mobile Data.
  */
 object DropOfflineWifiManager {
 
     private var hotspotReservation: WifiManager.LocalOnlyHotspotReservation? = null
     private var activeNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
+    val isHotspotActive: Boolean
+        get() = hotspotReservation != null
+
     @Volatile
     var activeBoundNetwork: Network? = null
+        private set
+
+    @Volatile
+    var activeBoundGatewayIp: String? = null
         private set
 
     fun requiredHotspotPermissions(): Array<String> {
@@ -89,9 +104,7 @@ object DropOfflineWifiManager {
      * Resolves the best active Wi-Fi [Network] for local LAN HTTP connections:
      * 1. Explicitly bound `WifiNetworkSpecifier` hotspot network if connected.
      * 2. Active default network if it carries `TRANSPORT_WIFI`.
-     * 3. Any connected `TRANSPORT_WIFI` network from `ConnectivityManager.allNetworks`
-     *    (critical when the phone is connected to an offline Portable Hotspot while Mobile Data
-     *    remains Android's default internet route!).
+     * 3. Any connected `TRANSPORT_WIFI` network from `ConnectivityManager.allNetworks`.
      */
     @Suppress("DEPRECATION")
     fun findActiveWifiNetwork(context: Context): Network? {
@@ -112,6 +125,70 @@ object DropOfflineWifiManager {
             val caps = runCatching { cm.getNetworkCapabilities(net) }.getOrNull()
             if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
                 return net
+            }
+        }
+        return null
+    }
+
+    /**
+     * Dynamically reads the real hotspot host gateway IPv4 address from a connected [Network]'s
+     * [LinkProperties] (`dhcpServerAddress` on Android 11+, `routes` gateway on all Android versions,
+     * or `.1` host derivation from the assigned client subnet) — critical for OEMs like Motorola,
+     * Samsung, and Pixel that assign `192.168.49.1`, `192.168.137.1`, or randomized `192.168.x.y`
+     * addresses to `LocalOnlyHotspot`.
+     */
+    fun resolveGatewayIpv4(context: Context, network: Network?): String? {
+        if (network == null) return activeBoundGatewayIp
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return activeBoundGatewayIp
+        val lp = runCatching { cm.getLinkProperties(network) }.getOrNull()
+        val resolved = extractGatewayIpv4(lp)
+        if (resolved != null && network == activeBoundNetwork) {
+            activeBoundGatewayIp = resolved
+        }
+        return resolved ?: if (network == activeBoundNetwork) activeBoundGatewayIp else null
+    }
+
+    fun extractGatewayIpv4(linkProperties: LinkProperties?): String? {
+        if (linkProperties == null) return null
+
+        // 1. Exact DHCP server IPv4 address (Android 11+ / API 30+) — most accurate for LocalOnlyHotspot
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val dhcp = linkProperties.dhcpServerAddress
+            if (dhcp is Inet4Address && !dhcp.isAnyLocalAddress && !dhcp.isLoopbackAddress) {
+                dhcp.hostAddress?.takeIf { it.isNotBlank() && it != "0.0.0.0" }?.let { return it }
+            }
+        }
+
+        // 2. IPv4 gateway from LinkProperties routes (works on Android 8+ / API 26+)
+        val routes = linkProperties.routes
+        val defaultGw = routes
+            .firstOrNull { route ->
+                val gw = route.gateway
+                route.isDefaultRoute && gw is Inet4Address && !gw.isAnyLocalAddress && !gw.isLoopbackAddress
+            }
+            ?.gateway
+            ?.hostAddress
+            ?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+        if (defaultGw != null) return defaultGw
+
+        val anyRouteGw = routes
+            .mapNotNull { it.gateway as? Inet4Address }
+            .firstOrNull { !it.isAnyLocalAddress && !it.isLoopbackAddress }
+            ?.hostAddress
+            ?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+        if (anyRouteGw != null) return anyRouteGw
+
+        // 3. Fallback: derive `.1` gateway from assigned client IPv4 LinkAddress (e.g. 192.168.137.42 -> 192.168.137.1)
+        val clientIpv4 = linkProperties.linkAddresses
+            .mapNotNull { it.address as? Inet4Address }
+            .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+            ?.hostAddress
+        if (clientIpv4 != null && (clientIpv4.startsWith("192.168.") || clientIpv4.startsWith("10."))) {
+            val prefix = clientIpv4.substringBeforeLast('.', "")
+            if (prefix.isNotBlank()) {
+                val candidate = "$prefix.1"
+                if (candidate != clientIpv4) return candidate
             }
         }
         return null
@@ -181,10 +258,12 @@ object DropOfflineWifiManager {
     }
 
     /**
-     * Requests a `WifiNetworkSpecifier` connection inside a ViewModel-scoped coroutine.
+     * Requests a `WifiNetworkSpecifier` connection inside a ViewModel-scoped coroutine and returns
+     * both the exact bound [Network] object and the dynamically resolved hotspot gateway IP from
+     * `LinkProperties` (`dhcpServerAddress` / `routes`).
      *
      * IMPORTANT: The registered [ConnectivityManager.NetworkCallback] is deliberately kept alive
-     * after this function returns `Result.success(network)` (because Android immediately drops a
+     * after this function returns `Result.success(...)` (because Android immediately drops a
      * `WifiNetworkSpecifier` connection if its callback is unregistered). It is only released when
      * [disconnectBoundNetwork] is called on explicit disconnect or ViewModel teardown, or if the
      * requesting coroutine is cancelled before connecting.
@@ -194,7 +273,7 @@ object DropOfflineWifiManager {
         ssid: String,
         password: String?,
         timeoutMs: Int = 30_000,
-    ): Result<Network> {
+    ): Result<BoundHotspotConnection> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return Result.failure(
                 IllegalStateException("Auto-join requires Android 10+. Copy the password and join \"$ssid\" in Wi-Fi Settings."),
@@ -217,23 +296,57 @@ object DropOfflineWifiManager {
             .setNetworkSpecifier(specifierBuilder.build())
             .build()
 
+        val mainHandler = Handler(Looper.getMainLooper())
+
         return suspendCancellableCoroutine { cont ->
             val resumed = AtomicBoolean(false)
+            var pendingFallbackRunnable: Runnable? = null
+
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     activeBoundNetwork = network
                     runCatching { cm.bindProcessToNetwork(network) }
-                    if (resumed.compareAndSet(false, true) && cont.isActive) {
-                        cont.resume(Result.success(network))
+
+                    val immediateGateway = resolveGatewayIpv4(context, network)
+                    if (immediateGateway != null) {
+                        activeBoundGatewayIp = immediateGateway
+                        if (resumed.compareAndSet(false, true) && cont.isActive) {
+                            cont.resume(Result.success(BoundHotspotConnection(network, immediateGateway)))
+                        }
+                    } else {
+                        // Give Android up to 1.2s for onLinkPropertiesChanged to report dhcpServerAddress/routes
+                        val fallback = Runnable {
+                            val lateGateway = resolveGatewayIpv4(context, network)
+                            if (resumed.compareAndSet(false, true) && cont.isActive) {
+                                cont.resume(Result.success(BoundHotspotConnection(network, lateGateway)))
+                            }
+                        }
+                        pendingFallbackRunnable = fallback
+                        mainHandler.postDelayed(fallback, 1_200L)
+                    }
+                }
+
+                override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                    val gw = extractGatewayIpv4(linkProperties)
+                    if (gw != null && activeBoundNetwork == network) {
+                        activeBoundGatewayIp = gw
+                        pendingFallbackRunnable?.let { mainHandler.removeCallbacks(it) }
+                        pendingFallbackRunnable = null
+                        if (resumed.compareAndSet(false, true) && cont.isActive) {
+                            cont.resume(Result.success(BoundHotspotConnection(network, gw)))
+                        }
                     }
                 }
 
                 override fun onUnavailable() {
+                    pendingFallbackRunnable?.let { mainHandler.removeCallbacks(it) }
+                    pendingFallbackRunnable = null
                     if (activeNetworkCallback === this) {
                         runCatching { cm.unregisterNetworkCallback(this) }
                         activeNetworkCallback = null
                     }
                     activeBoundNetwork = null
+                    activeBoundGatewayIp = null
                     if (resumed.compareAndSet(false, true) && cont.isActive) {
                         cont.resume(
                             Result.failure(
@@ -248,6 +361,7 @@ object DropOfflineWifiManager {
                 override fun onLost(network: Network) {
                     if (activeBoundNetwork == network) {
                         activeBoundNetwork = null
+                        activeBoundGatewayIp = null
                         runCatching { cm.bindProcessToNetwork(null) }
                     }
                 }
@@ -255,6 +369,8 @@ object DropOfflineWifiManager {
 
             activeNetworkCallback = callback
             cont.invokeOnCancellation {
+                pendingFallbackRunnable?.let { mainHandler.removeCallbacks(it) }
+                pendingFallbackRunnable = null
                 // Only tear down if the coroutine was cancelled BEFORE the network connected
                 if (activeBoundNetwork == null && activeNetworkCallback === callback) {
                     runCatching { cm.unregisterNetworkCallback(callback) }
@@ -288,6 +404,7 @@ object DropOfflineWifiManager {
         }
         activeNetworkCallback = null
         activeBoundNetwork = null
+        activeBoundGatewayIp = null
         runCatching { cm?.bindProcessToNetwork(null) }
     }
 
