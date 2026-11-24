@@ -4,9 +4,11 @@ import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoDelete
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.WifiTethering
 import androidx.compose.material.icons.rounded.AutoDelete
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.WifiTethering
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.example.R
@@ -24,6 +26,13 @@ enum class AKitDestination(
         selectedIcon = Icons.Rounded.Bolt,
         unselectedIcon = Icons.Outlined.Bolt,
         testTag = "nav_tab_power",
+    ),
+    DESIGN(
+        route = "design",
+        labelRes = R.string.nav_design,
+        selectedIcon = Icons.Rounded.Palette,
+        unselectedIcon = Icons.Outlined.Palette,
+        testTag = "nav_tab_design",
     ),
     SNAPCLEAN(
         route = "snapclean",

@@ -150,6 +150,7 @@ class SnapCleanWatcherService : Service() {
                     expiresAtMs = now + settings.defaultRetentionHours * 3_600_000L,
                     status = ScreenshotStatus.PENDING_DELETE,
                     isTestEntry = false,
+                    filePath = candidate.filePath,
                 )
 
                 val inserted = repo.registerScreenshotIfNew(tracked)
@@ -160,6 +161,7 @@ class SnapCleanWatcherService : Service() {
                         defaultRetentionHours = settings.defaultRetentionHours,
                     )
                     SnapCleanSweepWorker.ensureScheduled(applicationContext)
+                    SnapCleanSweepWorker.scheduleNextSweepFor(applicationContext, tracked.expiresAtMs)
                 }
             }
         }

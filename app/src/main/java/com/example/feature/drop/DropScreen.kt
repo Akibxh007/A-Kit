@@ -134,12 +134,12 @@ fun DropScreen(
     var locationPromptForAction by remember { mutableStateOf(PendingWifiPermissionAction.NONE) }
     val layoutDirection = LocalLayoutDirection.current
 
-    // Ensure generous bottom clearance (>=180.dp) so the URL copy bar & received files sit cleanly above the floating nav pill
+    // Clean bottom clearance above the solid opaque Material 3 NavigationBar
     val effectiveContentPadding = PaddingValues(
         start = contentPadding.calculateStartPadding(layoutDirection),
         end = contentPadding.calculateEndPadding(layoutDirection),
         top = contentPadding.calculateTopPadding(),
-        bottom = maxOf(contentPadding.calculateBottomPadding(), 180.dp),
+        bottom = maxOf(contentPadding.calculateBottomPadding(), 96.dp),
     )
 
     val receivedHostPeerFiles = remember(state.sharedFiles) {

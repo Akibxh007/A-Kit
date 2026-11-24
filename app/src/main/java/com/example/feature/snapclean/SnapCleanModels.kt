@@ -43,6 +43,7 @@ data class TrackedScreenshot(
     val expiresAtMs: Long,
     val status: ScreenshotStatus,
     val isTestEntry: Boolean = false,
+    val filePath: String = "",
 ) {
     fun formatRemainingCountdown(nowMs: Long = System.currentTimeMillis()): String {
         if (status == ScreenshotStatus.KEPT_FOREVER) return "Protected"
@@ -102,6 +103,7 @@ data class SnapCleanUiState(
     val settings: SnapCleanSettings = SnapCleanSettings(),
     val mediaPermissionGranted: Boolean = false,
     val notificationPermissionGranted: Boolean = false,
+    val allFilesAccessGranted: Boolean = false,
     val isWatcherServiceRunning: Boolean = false,
     val pendingQueue: List<TrackedScreenshot> = emptyList(),
     val protectedVault: List<TrackedScreenshot> = emptyList(),

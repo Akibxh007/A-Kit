@@ -84,10 +84,13 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.ClockNumberStyle
 import com.example.data.ThemeMode
 import com.example.ui.theme.AKitTheme
 import com.example.ui.theme.MonoLabelStyle
 import com.example.ui.theme.MonoMetricStyle
+import com.example.ui.theme.MontserratAlternatesFontFamily
+import com.example.ui.theme.RobotoCondensedFontFamily
 import com.example.ui.theme.SpaceGroteskFontFamily
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -176,8 +179,25 @@ private fun ChargingAodScreen(
     onLaunchCamera: () -> Unit,
 ) {
     val state by PowerTelemetryEngine.state.collectAsStateWithLifecycle()
+    val designConfig by PowerTelemetryEngine.designConfig.collectAsStateWithLifecycle()
     val settings = state.settings
     val accent = settings.aodAccent.composeColor
+
+    val clockFontFamily = when (designConfig.clockNumberStyle) {
+        ClockNumberStyle.MONTSERRAT_BOLD -> MontserratAlternatesFontFamily
+        ClockNumberStyle.CONDENSED_TECH -> RobotoCondensedFontFamily
+        ClockNumberStyle.OUTLINE_DIGITAL -> MontserratAlternatesFontFamily
+    }
+    val clockFontWeight = when (designConfig.clockNumberStyle) {
+        ClockNumberStyle.MONTSERRAT_BOLD -> FontWeight.Bold
+        ClockNumberStyle.CONDENSED_TECH -> FontWeight.SemiBold
+        ClockNumberStyle.OUTLINE_DIGITAL -> FontWeight.Light
+    }
+    val clockLetterSpacing = when (designConfig.clockNumberStyle) {
+        ClockNumberStyle.MONTSERRAT_BOLD -> (-1.5).sp
+        ClockNumberStyle.CONDENSED_TECH -> 0.sp
+        ClockNumberStyle.OUTLINE_DIGITAL -> 3.sp
+    }
 
     var flashlightOn by remember { mutableStateOf(false) }
 
@@ -270,11 +290,15 @@ private fun ChargingAodScreen(
                 ) {
                     Text(
                         text = currentTimeText,
-                        fontFamily = SpaceGroteskFontFamily,
-                        fontWeight = FontWeight.Light,
+                        fontFamily = clockFontFamily,
+                        fontWeight = clockFontWeight,
                         fontSize = 60.sp,
-                        letterSpacing = (-2).sp,
-                        color = Color(0xFFEAF2F8),
+                        letterSpacing = clockLetterSpacing,
+                        color = if (designConfig.clockNumberStyle == ClockNumberStyle.OUTLINE_DIGITAL) {
+                            accent
+                        } else {
+                            Color(0xFFEAF2F8)
+                        },
                         maxLines = 1,
                         softWrap = false,
                     )

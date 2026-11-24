@@ -16,9 +16,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -28,7 +26,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
@@ -39,9 +36,14 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.AccentSwatch
 import com.example.data.AppPreferences
+import com.example.data.ClockNumberStyle
+import com.example.data.FloatingPillStyle
+import com.example.data.GaugeStyle
 import com.example.data.ThemeMode
 import com.example.data.ThemePreferencesRepository
+import com.example.feature.design.DesignScreen
 import com.example.feature.drop.DropScreen
 import com.example.feature.drop.DropViewModel
 import com.example.feature.power.PowerScreen
@@ -51,9 +53,9 @@ import com.example.feature.snapclean.SnapCleanScreen
 import com.example.feature.snapclean.SnapCleanViewModel
 import com.example.ui.components.AKitTopBar
 import com.example.ui.components.SettingsModalSheet
+import com.example.ui.navigation.AKitBottomNavigationBar
 import com.example.ui.navigation.AKitDestination
 import com.example.ui.navigation.AKitNavigationRail
-import com.example.ui.navigation.FloatingPillNavBar
 import com.example.ui.theme.AKitTheme
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -94,6 +96,30 @@ class AKitAppViewModel(
     fun setDefaultStartupTab(tabRoute: String) {
         viewModelScope.launch {
             preferencesRepository.setDefaultStartupTab(tabRoute)
+        }
+    }
+
+    fun setGaugeStyle(style: GaugeStyle) {
+        viewModelScope.launch {
+            preferencesRepository.setGaugeStyle(style)
+        }
+    }
+
+    fun setFloatingPillStyle(style: FloatingPillStyle) {
+        viewModelScope.launch {
+            preferencesRepository.setFloatingPillStyle(style)
+        }
+    }
+
+    fun setClockNumberStyle(style: ClockNumberStyle) {
+        viewModelScope.launch {
+            preferencesRepository.setClockNumberStyle(style)
+        }
+    }
+
+    fun setAccentSwatch(swatch: AccentSwatch) {
+        viewModelScope.launch {
+            preferencesRepository.setAccentSwatch(swatch)
         }
     }
 }
@@ -137,9 +163,21 @@ fun AKitApp(
     var appliedStartupTab by rememberSaveable { mutableStateOf(false) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
 
-    // Keep Charging AOD auto-launch setting synchronized with PowerTelemetryEngine
-    LaunchedEffect(preferences.autoLaunchAodOnPlugIn) {
+    // Keep Charging AOD & Design Studio styles synchronized with PowerTelemetryEngine (HUD + AOD)
+    LaunchedEffect(
+        preferences.autoLaunchAodOnPlugIn,
+        preferences.gaugeStyle,
+        preferences.floatingPillStyle,
+        preferences.clockNumberStyle,
+        preferences.accentSwatch,
+    ) {
         PowerTelemetryEngine.setAutoLaunchAodOnPlugIn(preferences.autoLaunchAodOnPlugIn)
+        PowerTelemetryEngine.updateDesignConfig(
+            gaugeStyle = preferences.gaugeStyle,
+            floatingPillStyle = preferences.floatingPillStyle,
+            clockNumberStyle = preferences.clockNumberStyle,
+            accentSwatch = preferences.accentSwatch,
+        )
     }
 
     // Apply user's preferred Default Startup Tab once on cold launch (unless a Drop deep link arrived)
@@ -171,10 +209,13 @@ fun AKitApp(
     AKitTheme(
         themeMode = preferences.themeMode,
         dynamicColor = preferences.dynamicColor,
+        gaugeStyle = preferences.gaugeStyle,
+        floatingPillStyle = preferences.floatingPillStyle,
+        clockNumberStyle = preferences.clockNumberStyle,
+        accentSwatch = preferences.accentSwatch,
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val useNavigationRail = maxWidth >= 840.dp
-            val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
             Row(modifier = Modifier.fillMaxSize()) {
                 if (useNavigationRail) {
@@ -193,22 +234,26 @@ fun AKitApp(
                             onOpenSettings = { showSettingsSheet = true },
                         )
                     },
+                    bottomBar = {
+                        if (!useNavigationRail) {
+                            AKitBottomNavigationBar(
+                                currentDestination = currentDestination,
+                                onSelectDestination = { currentDestination = it },
+                            )
+                        }
+                    },
                 ) { innerPadding ->
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(innerPadding),
                     ) {
-                        // Generous bottom clearance so scrolling cards/buttons are NEVER obscured by floating pill nav
+                        // Clean 96.dp bottom padding so scrollable content never crowds the solid Material 3 NavigationBar
                         val listContentPadding = PaddingValues(
                             start = 16.dp,
                             end = 16.dp,
                             top = 8.dp,
-                            bottom = if (useNavigationRail) {
-                                28.dp + navBarBottomInset
-                            } else {
-                                128.dp + navBarBottomInset
-                            },
+                            bottom = if (useNavigationRail) 40.dp else 96.dp,
                         )
 
                         AnimatedContent(
@@ -240,6 +285,16 @@ fun AKitApp(
                                     viewModel = powerViewModel,
                                     contentPadding = listContentPadding,
                                 )
+                                AKitDestination.DESIGN -> DesignScreen(
+                                    preferences = preferences,
+                                    powerViewModel = powerViewModel,
+                                    onSelectGaugeStyle = appViewModel::setGaugeStyle,
+                                    onSelectFloatingPillStyle = appViewModel::setFloatingPillStyle,
+                                    onSelectClockNumberStyle = appViewModel::setClockNumberStyle,
+                                    onSelectAccentSwatch = appViewModel::setAccentSwatch,
+                                    onToggleAutoLaunchCharging = appViewModel::setAutoLaunchAodOnPlugIn,
+                                    contentPadding = listContentPadding,
+                                )
                                 AKitDestination.SNAPCLEAN -> SnapCleanScreen(
                                     viewModel = snapCleanViewModel,
                                     contentPadding = listContentPadding,
@@ -249,14 +304,6 @@ fun AKitApp(
                                     contentPadding = listContentPadding,
                                 )
                             }
-                        }
-
-                        if (!useNavigationRail) {
-                            FloatingPillNavBar(
-                                currentDestination = currentDestination,
-                                onSelectDestination = { currentDestination = it },
-                                modifier = Modifier.align(Alignment.BottomCenter),
-                            )
                         }
                     }
                 }

@@ -189,6 +189,9 @@ fun SectionHeader(
             text = title,
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp),
         )
         Surface(
             shape = CircleShape,
@@ -199,6 +202,8 @@ fun SectionHeader(
                 text = badgeText,
                 style = MonoLabelStyle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             )
         }

@@ -5,6 +5,7 @@
 
     <!-- Navigation Tabs -->
     <string name="nav_power">Power</string>
+    <string name="nav_design">Design</string>
     <string name="nav_snapclean">SnapClean</string>
     <string name="nav_drop">Drop</string>
 

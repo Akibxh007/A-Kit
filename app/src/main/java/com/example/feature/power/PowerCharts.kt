@@ -98,7 +98,11 @@ fun ChargingPowerByLevelCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp),
+                ) {
                     Text(
                         text = "Charging Power by Level",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -112,13 +116,15 @@ fun ChargingPowerByLevelCard(
                 }
                 Surface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f),
                 ) {
                     Text(
                         text = String.format(Locale.US, "MAX %.0fW", maxWattScale),
                         style = MonoLabelStyle,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                 }
             }
@@ -295,7 +301,11 @@ fun LiveThermalSpeedChartCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp),
+                ) {
                     Text(
                         text = "Live Thermal & Speed Profile",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),

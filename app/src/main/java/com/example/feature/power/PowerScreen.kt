@@ -4,10 +4,6 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,12 +33,12 @@ import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Thermostat
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -51,28 +47,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.R
-import com.example.ui.components.ModuleHeroCard
 import com.example.ui.components.SectionHeader
-import com.example.ui.components.TelemetryMetricCard
+import com.example.ui.theme.LocalAKitDesign
 import com.example.ui.theme.MonoLabelStyle
-import com.example.ui.theme.MonoMetricStyle
 import java.util.Locale
 import kotlin.math.abs
 
@@ -92,6 +83,7 @@ fun PowerScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val settings = state.settings
+    val design = LocalAKitDesign.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -124,21 +116,32 @@ fun PowerScreen(
         viewModel.refreshPermissions()
     }
 
-    val animatedBatteryProgress by animateFloatAsState(
-        targetValue = (state.exactLevelPercent / 100f).coerceIn(0f, 1f),
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessLow,
-        ),
-        label = "power_battery_level_progress",
-    )
+    // Dynamic accent: Emerald / Selected Accent when charging, Soft Coral/Peach when discharging
+    val heroAccent = if (state.isCharging) design.chargingAccent else design.dischargingAccent
+
+    // Live sparkline series derived from sessionSamples
+    val voltageSeries = remember(state.sessionSamples) {
+        buildSparklineList(state.sessionSamples) { it.voltageMv.toFloat() }
+    }
+    val currentSeries = remember(state.sessionSamples) {
+        buildSparklineList(state.sessionSamples) { abs(it.currentMa).toFloat() }
+    }
+    val wattageSeries = remember(state.sessionSamples) {
+        buildSparklineList(state.sessionSamples) { it.watts }
+    }
+    val tempSeries = remember(state.sessionSamples) {
+        buildSparklineList(state.sessionSamples) { it.tempCelsius }
+    }
+    val levelSeries = remember(state.sessionSamples) {
+        buildSparklineList(state.sessionSamples) { it.levelPercent.toFloat() }
+    }
 
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
             .testTag("power_screen_list"),
         contentPadding = contentPadding,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Optional Active Alarm Alert Banner
@@ -163,7 +166,9 @@ fun PowerScreen(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp),
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.NotificationsActive,
@@ -188,184 +193,110 @@ fun PowerScreen(
             }
         }
 
-        // 1. Live Wattage, Dual-Cell & Battery Hero Card
-        item(key = "power_hero") {
-            ModuleHeroCard(
-                moduleCode = when {
-                    settings.dualCellMode -> "MOD-01 • 2S DUAL-CELL"
-                    state.isAutoDualCellDetected -> "MOD-01 • AUTO 2S PACK"
-                    else -> stringResource(R.string.power_module_code)
-                },
-                title = stringResource(R.string.power_hero_title),
-                subtitle = "100% unlocked live wattage, decimal charge precision, HUD overlay, Charging AOD & thermal guards.",
-                icon = if (state.isCharging) Icons.Rounded.BatteryChargingFull else Icons.Rounded.Bolt,
-                accentColor = MaterialTheme.colorScheme.primary,
-                accentContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                onAccentContainerColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        // 1. Minimal, Dynamic Power Hero Section (270-Degree Arc Gauge + Power Pill)
+        item(key = "power_hero_gauge") {
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier
                     .widthIn(max = 640.dp)
+                    .fillMaxWidth()
                     .testTag("power_hero_card"),
             ) {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    // Top subtle metadata bar
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.Bottom,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                        Surface(
+                            shape = CircleShape,
+                            color = heroAccent.copy(alpha = 0.14f),
                         ) {
-                            Column {
-                                Text(
-                                    text = if (state.isCharging) "CHARGING POWER" else "SYSTEM DRAW",
-                                    style = MonoLabelStyle,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                )
-                                Row(
-                                    verticalAlignment = Alignment.Bottom,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    Text(
-                                        text = String.format(Locale.US, "%.1f W", state.wattage),
-                                        style = MonoMetricStyle.copy(
-                                            fontSize = MaterialTheme.typography.displaySmall.fontSize,
-                                            fontWeight = FontWeight.Bold,
-                                        ),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        modifier = Modifier.testTag("power_live_wattage_text"),
-                                    )
-                                    Text(
-                                        text = "${if (state.currentNowMa >= 0) "+" else ""}${state.currentNowMa} mA",
-                                        style = MonoLabelStyle.copy(fontSize = 13.sp),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        modifier = Modifier.padding(bottom = 5.dp),
-                                    )
-                                }
-                            }
-
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    text = String.format(Locale.US, "%.2f%%", state.exactLevelPercent),
-                                    style = MonoMetricStyle.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.testTag("power_decimal_percent_text"),
-                                )
-                                Text(
-                                    text = "${state.statusLabel} • ${state.pluggedLabel}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                )
-                            }
-                        }
-
-                        LinearProgressIndicator(
-                            progress = { animatedBatteryProgress },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(CircleShape),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                            strokeCap = StrokeCap.Round,
-                        )
-
-                        // Live Estimated Time Remaining strip
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
-                            ) {
-                                Text(
-                                    text = state.estimatedTimeLabel,
-                                    style = MonoLabelStyle.copy(fontWeight = FontWeight.SemiBold),
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                                        .testTag("power_estimate_time_badge"),
-                                )
-                            }
                             Text(
-                                text = String.format(
-                                    Locale.US,
-                                    "Peak %.1f W • %.2f V",
-                                    state.peakSessionWatts,
-                                    state.rawVoltageMv / 1000f,
-                                ),
+                                text = when {
+                                    settings.dualCellMode -> "2S DUAL-CELL ACTIVE"
+                                    state.isAutoDualCellDetected -> "AUTO 2S DETECTED"
+                                    else -> "SINGLE-CELL LIVE"
+                                },
                                 style = MonoLabelStyle,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = heroAccent,
                                 maxLines = 1,
                                 softWrap = false,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                             )
                         }
 
-                        // Quick Hardware Control Pills: Dual-Cell + °C/°F + Calibration
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        Text(
+                            text = "${state.pluggedLabel.uppercase(Locale.US)} • PEAK ${String.format(Locale.US, "%.1fW", state.peakSessionWatts)}",
+                            style = MonoLabelStyle,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+
+                    // 270-degree Arc Gauge centered
+                    PowerHeroArcGauge(
+                        levelPercent = state.exactLevelPercent,
+                        isCharging = state.isCharging,
+                        statusText = if (state.isCharging) "CHARGING" else "DISCHARGING",
+                        powerBadgeText = formatDynamicPowerBadge(state.isCharging, state.wattage),
+                        estimateText = state.estimatedTimeShort,
+                        accentColor = heroAccent,
+                        gaugeStyle = design.gaugeStyle,
+                        clockNumberStyle = design.clockNumberStyle,
+                        gaugeSize = 232.dp,
+                    )
+
+                    // Compact Hardware Calibration Strip
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        QuickToggleChip(
+                            label = if (state.effectiveDualCellActive) "2S MODE: ON" else "2S MODE: OFF",
+                            selected = state.effectiveDualCellActive,
+                            onClick = { viewModel.setDualCellMode(!settings.dualCellMode) },
+                            modifier = Modifier
+                                .weight(1.25f)
+                                .testTag("power_dual_cell_toggle"),
+                        )
+                        QuickToggleChip(
+                            label = "UNIT: ${settings.tempUnit.symbol}",
+                            selected = settings.tempUnit == TempUnit.FAHRENHEIT,
+                            onClick = viewModel::toggleTempUnit,
+                            modifier = Modifier
+                                .weight(0.85f)
+                                .testTag("power_temp_unit_toggle"),
+                        )
+                        Surface(
+                            onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .height(38.dp)
+                                .testTag("power_calibration_button"),
                         ) {
-                            QuickToggleChip(
-                                label = when {
-                                    settings.dualCellMode -> "2S Dual-Cell: ON"
-                                    state.isAutoDualCellDetected -> "2S Auto-Active"
-                                    else -> "Dual-Cell: OFF"
-                                },
-                                selected = state.effectiveDualCellActive,
-                                onClick = { viewModel.setDualCellMode(!settings.dualCellMode) },
-                                modifier = Modifier
-                                    .weight(1.25f)
-                                    .testTag("power_dual_cell_toggle"),
-                            )
-                            QuickToggleChip(
-                                label = "Unit: ${settings.tempUnit.symbol}",
-                                selected = settings.tempUnit == TempUnit.FAHRENHEIT,
-                                onClick = viewModel::toggleTempUnit,
-                                modifier = Modifier
-                                    .weight(0.85f)
-                                    .testTag("power_temp_unit_toggle"),
-                            )
-                            Surface(
-                                onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceContainer,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier
-                                    .height(38.dp)
-                                    .testTag("power_calibration_button"),
+                            Box(
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                contentAlignment = Alignment.Center,
                             ) {
-                                Box(
-                                    modifier = Modifier.padding(horizontal = 12.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Tune,
-                                        contentDescription = "Battery calibration",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
+                                Icon(
+                                    imageVector = Icons.Rounded.Tune,
+                                    contentDescription = "Battery calibration",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
                             }
                         }
                     }
@@ -373,22 +304,119 @@ fun PowerScreen(
             }
         }
 
-        // 2. Live Hardware Diagnostics Grid
-        item(key = "power_live_header") {
+        // 2. Single-Row Status Banner directly below Arc Gauge (Floating Overlay Pill / Monitoring Active)
+        item(key = "power_status_banner") {
+            val hudActive = settings.hudEnabled && state.overlayPermissionGranted
+            Surface(
+                onClick = { activeSheet = PowerActiveSheet.FLOATING_HUD },
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (hudActive) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant
+                    },
+                ),
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth()
+                    .testTag("power_hud_card"),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp),
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Box(
+                                modifier = Modifier.size(40.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Layers,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = if (hudActive) "Floating Pill Active" else "Floating Overlay Pill",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = when {
+                                    !state.overlayPermissionGranted -> "Tap to grant overlay access & style"
+                                    hudActive -> "${design.floatingPillStyle.label} • Live HUD monitoring"
+                                    else -> "Draggable live W / mA / temp pill"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = hudActive,
+                        onCheckedChange = { enable ->
+                            if (enable && !state.overlayPermissionGranted) {
+                                activeSheet = PowerActiveSheet.FLOATING_HUD
+                            } else {
+                                viewModel.setHudEnabled(enable)
+                            }
+                        },
+                        modifier = Modifier.testTag("power_hud_quick_switch"),
+                    )
+                }
+            }
+        }
+
+        // 3. 2-Column Live Telemetry Bento Grid (with animated sparkline backgrounds)
+        item(key = "power_bento_header") {
             SectionHeader(
-                title = "Live Hardware Diagnostics",
+                title = "Live Hardware Metrics",
                 badgeText = state.technology.uppercase(Locale.US),
                 modifier = Modifier.widthIn(max = 640.dp),
             )
         }
 
-        item(key = "power_diagnostics_grid") {
-            val healthPctText = state.healthEstimatePercent?.let { "$it%" } ?: state.healthLabel
-            val capacitySubText = if (state.estimatedCapacityMah != null) {
-                "${state.estimatedCapacityMah} / ${settings.designCapacityMah} mAh"
+        item(key = "power_bento_grid") {
+            val voltageText = if (state.rawVoltageMv > 0) "${state.rawVoltageMv} mV" else "-- mV"
+            val voltageSub = if (state.rawVoltageMv > 0) {
+                String.format(Locale.US, "%.2f V single-cell", state.rawVoltageMv / 1000f)
             } else {
-                "Design ${settings.designCapacityMah} mAh"
+                "Single-cell"
             }
+
+            val currentText = "${if (state.currentNowMa > 0) "+" else ""}${state.currentNowMa} mA"
+            val wattageText = String.format(Locale.US, "%.1f W", state.wattage)
+            val tempText = if (state.hasLiveReading) {
+                settings.tempUnit.format(state.temperatureCelsius)
+            } else {
+                "--"
+            }
+            val healthText = state.healthEstimatePercent?.let { "$it%" } ?: state.healthLabel
+            val maxCapValue = "${state.estimatedCapacityMah ?: settings.designCapacityMah} mAh"
 
             Column(
                 modifier = Modifier
@@ -396,117 +424,109 @@ fun PowerScreen(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // Row 1: VOLTAGE | CURRENT
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    TelemetryMetricCard(
-                        label = stringResource(R.string.power_metric_temp),
-                        value = if (state.hasLiveReading) {
-                            settings.tempUnit.format(state.temperatureCelsius)
-                        } else {
-                            "--"
-                        },
-                        sublabel = if (state.temperatureCelsius >= settings.overheatThresholdC) {
-                            "Above thermal limit"
-                        } else {
-                            "Thermal nominal"
-                        },
-                        icon = Icons.Rounded.Thermostat,
-                        accentColor = MaterialTheme.colorScheme.tertiary,
+                    BentoMetricCard(
+                        label = "VOLTAGE",
+                        value = voltageText,
+                        subtext = voltageSub,
+                        icon = Icons.Rounded.ElectricBolt,
+                        accentColor = design.chargingAccent,
+                        sparklineValues = voltageSeries,
+                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        testTagName = "bento_metric_voltage",
                         modifier = Modifier.weight(1f),
                     )
-                    TelemetryMetricCard(
-                        label = stringResource(R.string.power_metric_voltage),
-                        value = if (state.rawVoltageMv > 0) {
-                            String.format(Locale.US, "%.2f V", state.rawVoltageMv / 1000f)
-                        } else {
-                            "-- V"
-                        },
-                        sublabel = if (state.rawVoltageMv > 0) {
-                            "${state.rawVoltageMv} mV single-cell"
-                        } else {
-                            "Single-cell voltage"
-                        },
-                        icon = Icons.Rounded.ElectricBolt,
-                        accentColor = MaterialTheme.colorScheme.primary,
+                    BentoMetricCard(
+                        label = "CURRENT",
+                        value = currentText,
+                        subtext = if (state.isCharging) "Net inflow" else "System draw",
+                        icon = Icons.Rounded.Bolt,
+                        accentColor = heroAccent,
+                        sparklineValues = currentSeries,
+                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        testTagName = "bento_metric_current",
                         modifier = Modifier.weight(1f),
                     )
                 }
 
+                // Row 2: WATTAGE | TEMPERATURE
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Surface(
+                    BentoMetricCard(
+                        label = "WATTAGE",
+                        value = wattageText,
+                        subtext = String.format(Locale.US, "Peak %.1f W", state.peakSessionWatts),
+                        icon = Icons.Rounded.Speed,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        sparklineValues = wattageSeries,
                         onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
-                        shape = RoundedCornerShape(24.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        tonalElevation = 2.dp,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("power_health_card"),
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = "Est. Health",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Icon(
-                                    imageVector = Icons.Rounded.HealthAndSafety,
-                                    contentDescription = "Battery Health",
-                                    tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                            Text(
-                                text = healthPctText,
-                                style = MonoMetricStyle,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = capacitySubText,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                        testTagName = "bento_metric_wattage",
+                        modifier = Modifier.weight(1f),
+                    )
+                    BentoMetricCard(
+                        label = "TEMPERATURE",
+                        value = tempText,
+                        subtext = if (state.temperatureCelsius >= settings.overheatThresholdC) {
+                            "Above limit"
+                        } else {
+                            "Thermal nominal"
+                        },
+                        icon = Icons.Rounded.Thermostat,
+                        accentColor = design.dischargingAccent,
+                        sparklineValues = tempSeries,
+                        onClick = viewModel::toggleTempUnit,
+                        testTagName = "bento_metric_temp",
+                        modifier = Modifier.weight(1f),
+                    )
+                }
 
-                    TelemetryMetricCard(
-                        label = "Current Flow",
-                        value = "${abs(state.currentNowMa)} mA",
-                        sublabel = String.format(Locale.US, "Peak %.1f W session", state.peakSessionWatts),
+                // Row 3: HEALTH | MAX CAPACITY
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    BentoMetricCard(
+                        label = "HEALTH",
+                        value = healthText,
+                        subtext = state.healthLabel,
+                        icon = Icons.Rounded.HealthAndSafety,
+                        accentColor = design.chargingAccent,
+                        sparklineValues = levelSeries,
+                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        testTagName = "power_health_card",
+                        modifier = Modifier.weight(1f),
+                    )
+                    BentoMetricCard(
+                        label = "MAX CAPACITY",
+                        value = maxCapValue,
+                        subtext = "Design ${settings.designCapacityMah} mAh",
                         icon = Icons.Rounded.BatteryStd,
                         accentColor = MaterialTheme.colorScheme.primary,
+                        sparklineValues = levelSeries,
+                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        testTagName = "bento_metric_capacity",
                         modifier = Modifier.weight(1f),
                     )
                 }
             }
         }
 
-        // 3. Dedicated Pro Tools: Charging AOD, Floating HUD Pill & Smart Protection Alarms
+        // 4. Charging AOD & Protection Guards Section
         item(key = "power_tools_header") {
             Spacer(modifier = Modifier.height(2.dp))
             SectionHeader(
-                title = "Pro Overlays, AOD & Guards",
+                title = "Charging AOD & Guards",
                 badgeText = "ALL UNLOCKED",
                 modifier = Modifier.widthIn(max = 640.dp),
             )
         }
 
-        // Charging AOD Primary Launch Card
         item(key = "power_aod_card") {
             Surface(
                 modifier = Modifier
@@ -514,14 +534,13 @@ fun PowerScreen(
                     .fillMaxWidth()
                     .testTag("power_aod_card"),
                 shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                tonalElevation = 3.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(18.dp),
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Row(
@@ -532,14 +551,16 @@ fun PowerScreen(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp),
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
                                 color = MaterialTheme.colorScheme.primaryContainer,
                             ) {
                                 Box(
-                                    modifier = Modifier.size(44.dp),
+                                    modifier = Modifier.size(42.dp),
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Icon(
@@ -552,13 +573,17 @@ fun PowerScreen(
                             Column {
                                 Text(
                                     text = "AMOLED Charging AOD",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    style = MaterialTheme.typography.titleMedium,
                                     color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    text = "${settings.aodStyle.title} • ${settings.aodAccent.label} • Burn-in Shift",
+                                    text = "${settings.aodStyle.title} • ${design.clockNumberStyle.label}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
@@ -580,7 +605,7 @@ fun PowerScreen(
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(48.dp)
                             .testTag("launch_charging_aod_button"),
                     ) {
                         Icon(
@@ -591,192 +616,112 @@ fun PowerScreen(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "Launch Charging AOD",
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            style = MaterialTheme.typography.labelLarge,
                         )
                     }
                 }
             }
         }
 
-        // Floating HUD Pill + Smart Protection Alarms Compact Cards
-        item(key = "power_hud_and_alarms") {
-            Column(
+        item(key = "power_alarms_card_item") {
+            Surface(
+                onClick = { activeSheet = PowerActiveSheet.PROTECTION_ALARMS },
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (settings.activeAlarmCount > 0) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant
+                    },
+                ),
                 modifier = Modifier
                     .widthIn(max = 640.dp)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .fillMaxWidth()
+                    .testTag("power_alarms_card"),
             ) {
-                // Floating Overlay HUD Card
-                Surface(
-                    onClick = { activeSheet = PowerActiveSheet.FLOATING_HUD },
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    tonalElevation = 2.dp,
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (settings.hudEnabled) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-                        } else {
-                            MaterialTheme.colorScheme.outlineVariant
-                        },
-                    ),
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("power_hud_card"),
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = settings.hudAccent.composeColor.copy(alpha = 0.16f),
-                            ) {
-                                Box(
-                                    modifier = Modifier.size(44.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Layers,
-                                        contentDescription = null,
-                                        tint = settings.hudAccent.composeColor,
-                                    )
-                                }
-                            }
-                            Column {
-                                Text(
-                                    text = "Floating Overlay HUD Pill",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                                Text(
-                                    text = if (!state.overlayPermissionGranted) {
-                                        "Tap to grant overlay access & style"
-                                    } else if (settings.hudEnabled) {
-                                        "Live • ${settings.hudAccent.label} • ${(settings.hudOpacity * 100).toInt()}% opacity"
-                                    } else {
-                                        "Draggable mini W / mA / temp pill"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-
-                        Switch(
-                            checked = settings.hudEnabled && state.overlayPermissionGranted,
-                            onCheckedChange = { enable ->
-                                if (enable && !state.overlayPermissionGranted) {
-                                    activeSheet = PowerActiveSheet.FLOATING_HUD
-                                } else {
-                                    viewModel.setHudEnabled(enable)
-                                }
-                            },
-                            modifier = Modifier.testTag("power_hud_quick_switch"),
-                        )
-                    }
-                }
-
-                // Smart Battery Protection Alarms Card
-                Surface(
-                    onClick = { activeSheet = PowerActiveSheet.PROTECTION_ALARMS },
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    tonalElevation = 2.dp,
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (settings.activeAlarmCount > 0) {
-                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.55f)
-                        } else {
-                            MaterialTheme.colorScheme.outlineVariant
-                        },
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("power_alarms_card"),
-                ) {
-                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .weight(1f)
+                            .padding(end = 12.dp),
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                            ) {
-                                Box(
-                                    modifier = Modifier.size(44.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Security,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    )
-                                }
-                            }
-                            Column {
-                                Text(
-                                    text = "Smart Protection Alarms",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                                Text(
-                                    text = "High ${settings.highChargeThreshold}% • Low ${settings.lowBatteryThreshold}% • Thermal ${settings.tempUnit.format(settings.overheatThresholdC.toFloat())}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-
                         Surface(
-                            shape = CircleShape,
-                            color = if (settings.activeAlarmCount > 0) {
-                                MaterialTheme.colorScheme.secondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerHigh
-                            },
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
                         ) {
+                            Box(
+                                modifier = Modifier.size(42.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Security,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
+                        }
+                        Column {
                             Text(
-                                text = if (settings.activeAlarmCount > 0) {
-                                    "${settings.activeAlarmCount} ACTIVE"
-                                } else {
-                                    "CONFIGURE"
-                                },
-                                style = MonoLabelStyle,
-                                color = if (settings.activeAlarmCount > 0) {
-                                    MaterialTheme.colorScheme.onSecondaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                text = "Smart Protection Alarms",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "High ${settings.highChargeThreshold}% • Low ${settings.lowBatteryThreshold}% • Thermal ${settings.tempUnit.format(settings.overheatThresholdC.toFloat())}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
+
+                    Surface(
+                        shape = CircleShape,
+                        color = if (settings.activeAlarmCount > 0) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                    ) {
+                        Text(
+                            text = if (settings.activeAlarmCount > 0) {
+                                "${settings.activeAlarmCount} ACTIVE"
+                            } else {
+                                "CONFIGURE"
+                            },
+                            style = MonoLabelStyle,
+                            color = if (settings.activeAlarmCount > 0) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
                 }
             }
         }
 
-        // 4. Unlocked Pro Charts Section
+        // 5. Unlocked Pro Charts Section
         item(key = "power_charts_header") {
             Spacer(modifier = Modifier.height(2.dp))
             SectionHeader(
-                title = "Unlocked Pro Charts",
+                title = "Live Analytics Charts",
                 badgeText = "CANVAS LIVE",
                 modifier = Modifier.widthIn(max = 640.dp),
             )
@@ -876,7 +821,7 @@ private fun QuickToggleChip(
         color = if (selected) {
             MaterialTheme.colorScheme.primaryContainer
         } else {
-            MaterialTheme.colorScheme.surfaceContainer
+            MaterialTheme.colorScheme.surfaceContainerHigh
         },
         border = BorderStroke(
             width = 1.dp,

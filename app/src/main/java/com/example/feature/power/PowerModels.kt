@@ -81,6 +81,7 @@ data class TelemetrySample(
     val tempCelsius: Float,
     val levelPercent: Int,
     val currentMa: Int,
+    val voltageMv: Int = 0,
 )
 
 @Immutable

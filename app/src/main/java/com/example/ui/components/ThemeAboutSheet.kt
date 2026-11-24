@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -99,6 +100,7 @@ private data class InteractivePermissionStatus(
     val notificationsGranted: Boolean,
     val overlayGranted: Boolean,
     val mediaGranted: Boolean,
+    val allFilesGranted: Boolean,
     val unrestrictedBattery: Boolean,
 )
 
@@ -120,12 +122,14 @@ private fun readPermissionStatus(context: Context): InteractivePermissionStatus 
     } else {
         true
     }
+    val allFiles = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
     val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
     val unrestricted = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
     return InteractivePermissionStatus(
         notificationsGranted = notif,
         overlayGranted = overlay,
         mediaGranted = media,
+        allFilesGranted = allFiles,
         unrestrictedBattery = unrestricted,
     )
 }
@@ -391,6 +395,35 @@ fun SettingsModalSheet(
                             }
                         },
                         testTag = "perm_row_media",
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                    InteractivePermissionRow(
+                        icon = Icons.Rounded.VerifiedUser,
+                        title = "All Files Access (Silent Clean)",
+                        subtitle = "Zero-prompt background deletion for SnapClean",
+                        granted = permStatus.allFilesGranted,
+                        onClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                val appIntent = Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:${context.packageName}"),
+                                )
+                                runCatching { context.startActivity(appIntent) }
+                                    .onFailure {
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                                            )
+                                        }
+                                    }
+                            } else {
+                                openAppDetailsSettings(context)
+                            }
+                        },
+                        testTag = "perm_row_all_files",
                     )
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 16.dp),

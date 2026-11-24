@@ -2,10 +2,13 @@ package com.example.feature.snapclean
 
 import android.content.ContentUris
 import android.content.Context
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
+import java.io.File
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -177,6 +180,7 @@ class SnapCleanRepository(private val context: Context) {
                 item.expiresAtMs.toString(),
                 item.status.key,
                 item.isTestEntry.toString(),
+                b64(item.filePath),
             ).joinToString("|")
         }
 
@@ -196,6 +200,7 @@ class SnapCleanRepository(private val context: Context) {
                     expiresAtMs = parts[6].toLong(),
                     status = ScreenshotStatus.fromKey(parts[7]),
                     isTestEntry = parts[8].toBoolean(),
+                    filePath = parts.getOrNull(9)?.let(::unb64).orEmpty(),
                 )
             }.getOrNull()
         }.toList()
@@ -230,10 +235,16 @@ object SnapCleanCoordinator {
         _isWatcherRunning.value = running
     }
 
+    fun hasAllFilesAccess(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+
     /**
-     * Safely deletes a single screenshot. Handles test items locally and real MediaStore
-     * URIs via ContentResolver, returning [DeleteOutcome.RequiresUserConsent] if Android 11+
-     * Scoped Storage requires system confirmation via MediaStore.createDeleteRequest.
+     * True zero-prompt screenshot deletion:
+     * - When MANAGE_EXTERNAL_STORAGE (All Files Access) is granted (or API < 30), resolves the
+     *   real filesystem path and deletes silently via File.delete() without ANY OS dialog, then
+     *   immediately invokes MediaScannerConnection.scanFile() so Gallery & MediaStore update.
+     * - Gracefully cleans up already-deleted files without crashing.
+     * - Falls back to ContentResolver / MediaStore consent ONLY if All Files Access is not granted.
      */
     suspend fun attemptDeleteScreenshot(
         context: Context,
@@ -247,20 +258,46 @@ object SnapCleanCoordinator {
         }
 
         val uri = runCatching { Uri.parse(item.uriString) }.getOrNull()
-            ?: run {
-                repo.removeItemsAfterDelete(listOf(item.id), 0L)
-                return DeleteOutcome.Deleted
+        val resolvedFile = resolveScreenshotFile(context, item, uri)
+
+        // 1. Zero-Prompt Silent Direct File Deletion path (when All Files Access is granted)
+        if (hasAllFilesAccess()) {
+            if (resolvedFile != null) {
+                if (!resolvedFile.exists()) {
+                    // File was already deleted externally — prune queue & refresh MediaStore cleanly
+                    refreshMediaStoreAfterDelete(context, resolvedFile.absolutePath, uri)
+                    repo.removeItemsAfterDelete(listOf(item.id), item.sizeBytes)
+                    SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
+                    return DeleteOutcome.Deleted
+                }
+
+                val deletedSilently = runCatching { resolvedFile.delete() }.getOrDefault(false)
+                if (deletedSilently || !resolvedFile.exists()) {
+                    refreshMediaStoreAfterDelete(context, resolvedFile.absolutePath, uri)
+                    repo.removeItemsAfterDelete(listOf(item.id), item.sizeBytes)
+                    SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
+                    return DeleteOutcome.Deleted
+                }
             }
+        }
+
+        // 2. Fallback when All Files Access is not granted or file path couldn't be resolved directly
+        if (uri == null) {
+            repo.removeItemsAfterDelete(listOf(item.id), 0L)
+            return DeleteOutcome.Deleted
+        }
 
         return try {
             val deletedRows = context.contentResolver.delete(uri, null, null)
             if (deletedRows > 0) {
+                resolvedFile?.absolutePath?.let { path ->
+                    MediaScannerConnection.scanFile(context.applicationContext, arrayOf(path), null, null)
+                }
                 repo.removeItemsAfterDelete(listOf(item.id), item.sizeBytes)
                 SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
                 DeleteOutcome.Deleted
             } else {
-                // Verify if the file still exists in MediaStore
-                if (!mediaUriExists(context, uri)) {
+                if (!mediaUriExists(context, uri) && (resolvedFile == null || !resolvedFile.exists())) {
                     repo.removeItemsAfterDelete(listOf(item.id), item.sizeBytes)
                     SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
                     DeleteOutcome.Deleted
@@ -270,12 +307,83 @@ object SnapCleanCoordinator {
                 }
             }
         } catch (_: SecurityException) {
-            // Android 11+ Scoped Storage: SystemUI owns the screenshot file; request OS batch delete consent
             repo.markNeedsUserConfirmation(item.id)
             DeleteOutcome.RequiresUserConsent(uri, item.id)
         } catch (t: Throwable) {
             DeleteOutcome.Failed(t.message ?: "Unable to delete file")
         }
+    }
+
+    private fun refreshMediaStoreAfterDelete(context: Context, absolutePath: String, uri: Uri?) {
+        runCatching {
+            MediaScannerConnection.scanFile(
+                context.applicationContext,
+                arrayOf(absolutePath),
+                null,
+                null,
+            )
+        }
+        if (uri != null) {
+            runCatching { context.contentResolver.delete(uri, null, null) }
+        }
+    }
+
+    private fun resolveScreenshotFile(
+        context: Context,
+        item: TrackedScreenshot,
+        uri: Uri?,
+    ): File? {
+        // Priority 1: Stored absolute path
+        if (item.filePath.isNotBlank()) {
+            val direct = File(item.filePath)
+            if (direct.exists()) return direct
+        }
+
+        // Priority 2: Query MediaStore DATA column for exact path on device storage
+        if (uri != null) {
+            val queriedPath = queryDataPathFromUri(context, uri)
+            if (!queriedPath.isNullOrBlank()) {
+                val fromMediaStore = File(queriedPath)
+                if (fromMediaStore.exists()) return fromMediaStore
+            }
+        }
+
+        // Priority 3: Reconstruct path from relativePath + displayName under primary external storage
+        val extRoot = runCatching { Environment.getExternalStorageDirectory() }.getOrNull()
+        if (extRoot != null && item.displayName.isNotBlank()) {
+            val relClean = item.relativePath.trim().trimStart('/').trimEnd('/')
+            if (relClean.isNotBlank()) {
+                val candidate = File(File(extRoot, relClean), item.displayName)
+                if (candidate.exists()) return candidate
+            }
+            val picsCandidate = File(File(extRoot, "Pictures/Screenshots"), item.displayName)
+            if (picsCandidate.exists()) return picsCandidate
+            val dcimCandidate = File(File(extRoot, "DCIM/Screenshots"), item.displayName)
+            if (dcimCandidate.exists()) return dcimCandidate
+        }
+
+        // Return stored file reference even if already removed so caller sees !exists() cleanly
+        return item.filePath.takeIf { it.isNotBlank() }?.let { File(it) }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queryDataPathFromUri(context: Context, uri: Uri): String? {
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.Images.Media.DATA),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val col = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
+                    if (col >= 0) cursor.getString(col) else null
+                } else {
+                    null
+                }
+            }
+        }.getOrNull()
     }
 
     /**
@@ -325,12 +433,11 @@ object SnapCleanCoordinator {
             add(MediaStore.Images.Media.SIZE)
             add(MediaStore.Images.Media.DATE_ADDED)
             add(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+            @Suppress("DEPRECATION")
+            add(MediaStore.Images.Media.DATA)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 add(MediaStore.Images.Media.RELATIVE_PATH)
                 add(MediaStore.Images.Media.IS_PENDING)
-            } else {
-                @Suppress("DEPRECATION")
-                add(MediaStore.Images.Media.DATA)
             }
         }.toTypedArray()
 
@@ -359,11 +466,7 @@ object SnapCleanCoordinator {
                     -1
                 }
                 @Suppress("DEPRECATION")
-                val dataCol = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                    cursor.getColumnIndex(MediaStore.Images.Media.DATA)
-                } else {
-                    -1
-                }
+                val dataCol = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
 
                 var inspected = 0
                 while (cursor.moveToNext() && results.size < limit && inspected < 40) {
@@ -375,13 +478,11 @@ object SnapCleanCoordinator {
 
                     val name = cursor.getString(nameCol).orEmpty()
                     val bucket = if (bucketCol >= 0) cursor.getString(bucketCol).orEmpty() else ""
-                    val path = when {
-                        relPathCol >= 0 -> cursor.getString(relPathCol).orEmpty()
-                        dataCol >= 0 -> cursor.getString(dataCol).orEmpty()
-                        else -> ""
-                    }
+                    val absDataPath = if (dataCol >= 0) cursor.getString(dataCol).orEmpty() else ""
+                    val relPath = if (relPathCol >= 0) cursor.getString(relPathCol).orEmpty() else ""
+                    val checkPath = relPath.ifBlank { absDataPath }
 
-                    val isScreenshotPath = path.contains("screenshots", ignoreCase = true) ||
+                    val isScreenshotPath = checkPath.contains("screenshots", ignoreCase = true) ||
                         bucket.contains("screenshots", ignoreCase = true)
                     if (!isScreenshotPath) continue
 
@@ -390,14 +491,26 @@ object SnapCleanCoordinator {
                         MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                         mediaId,
                     )
+                    val safeName = name.ifBlank { "Screenshot_$mediaId.png" }
+                    val safeRelPath = relPath.ifBlank { "Pictures/Screenshots/" }
+                    val finalFilePath = absDataPath.ifBlank {
+                        val root = runCatching { Environment.getExternalStorageDirectory() }.getOrNull()
+                        if (root != null) {
+                            File(File(root, safeRelPath.trimStart('/').trimEnd('/')), safeName).absolutePath
+                        } else {
+                            ""
+                        }
+                    }
+
                     results.add(
                         MediaScreenshotCandidate(
                             mediaId = "ms_$mediaId",
                             uri = uri,
-                            displayName = name.ifBlank { "Screenshot_$mediaId.png" },
-                            relativePath = path.ifBlank { "Pictures/Screenshots/" },
+                            displayName = safeName,
+                            relativePath = safeRelPath,
                             sizeBytes = cursor.getLong(sizeCol).coerceAtLeast(0L),
                             capturedAtMs = if (dateAddedSec > 0L) dateAddedSec * 1000L else System.currentTimeMillis(),
+                            filePath = finalFilePath,
                         ),
                     )
                 }
@@ -426,4 +539,5 @@ data class MediaScreenshotCandidate(
     val relativePath: String,
     val sizeBytes: Long,
     val capturedAtMs: Long,
+    val filePath: String = "",
 )

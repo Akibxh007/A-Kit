@@ -10,8 +10,14 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- SnapClean Smart Screenshot Manager -->
+    <!-- SnapClean Smart Screenshot Manager (Zero-Prompt Silent Auto-Delete) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission
+        android:name="android.permission.MANAGE_MEDIA"
+        tools:ignore="ProtectedPermissions" />
 
     <!-- Drop Local P2P Wi-Fi Share (100% Local LAN / Hotspot ServerSocket, WifiNetworkSpecifier & QR Scanner) -->
     <uses-permission android:name="android.permission.INTERNET" />

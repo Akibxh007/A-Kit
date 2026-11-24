@@ -3,10 +3,13 @@ package com.example.feature.snapclean
 import android.Manifest
 import android.app.Application
 import android.app.PendingIntent
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -46,6 +49,7 @@ class SnapCleanViewModel(
             settings = settings,
             mediaPermissionGranted = isMediaPermissionGranted(),
             notificationPermissionGranted = isNotificationPermissionGranted(),
+            allFilesAccessGranted = isAllFilesAccessGranted(),
             isWatcherServiceRunning = watcherRunning,
             pendingQueue = pending,
             protectedVault = vault,
@@ -57,6 +61,7 @@ class SnapCleanViewModel(
         initialValue = SnapCleanUiState(
             mediaPermissionGranted = isMediaPermissionGranted(),
             notificationPermissionGranted = isNotificationPermissionGranted(),
+            allFilesAccessGranted = isAllFilesAccessGranted(),
             isWatcherServiceRunning = SnapCleanCoordinator.isWatcherRunning.value,
         ),
     )
@@ -133,9 +138,11 @@ class SnapCleanViewModel(
                     expiresAtMs = now + settings.defaultRetentionHours * 3_600_000L,
                     status = ScreenshotStatus.PENDING_DELETE,
                     isTestEntry = false,
+                    filePath = c.filePath,
                 )
                 if (repo.registerScreenshotIfNew(tracked)) {
                     addedCount += 1
+                    SnapCleanSweepWorker.scheduleNextSweepFor(getApplication(), tracked.expiresAtMs)
                 }
             }
             statusBanner.value = if (addedCount > 0) {
@@ -166,6 +173,10 @@ class SnapCleanViewModel(
             repo.scheduleForDuration(id, hours)
             SnapCleanNotifications.cancelScreenshotNotification(getApplication(), id)
             SnapCleanSweepWorker.ensureScheduled(getApplication())
+            SnapCleanSweepWorker.scheduleNextSweepFor(
+                getApplication(),
+                System.currentTimeMillis() + hours.coerceAtLeast(1) * 3_600_000L,
+            )
             val label = if (hours >= 24 && hours % 24 == 0) "${hours / 24}d" else "${hours}h"
             statusBanner.value = "Updated timer — deletes in $label."
         }
@@ -236,6 +247,33 @@ class SnapCleanViewModel(
         } else {
             null
         }
+    }
+
+    fun buildAllFilesAccessIntent(): Intent {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:${getApplication<Application>().packageName}"),
+            )
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${getApplication<Application>().packageName}")
+            }
+        }
+    }
+
+    fun buildAllFilesFallbackIntent(): Intent {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${getApplication<Application>().packageName}")
+            }
+        }
+    }
+
+    private fun isAllFilesAccessGranted(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
     }
 
     private fun isMediaPermissionGranted(): Boolean {

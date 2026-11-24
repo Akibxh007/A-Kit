@@ -31,10 +31,13 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.example.MainActivity
+import com.example.data.AccentSwatch
+import com.example.data.FloatingPillStyle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
@@ -47,6 +50,7 @@ class PowerMonitorService : Service() {
     private var windowManager: WindowManager? = null
     private var hudContainer: LinearLayout? = null
     private var hudMetricsText: TextView? = null
+    private var hudSubMetricsText: TextView? = null
     private var hudCloseText: TextView? = null
     private var hudParams: WindowManager.LayoutParams? = null
 
@@ -65,8 +69,11 @@ class PowerMonitorService : Service() {
         PowerTelemetryEngine.setServiceRunning(true)
 
         serviceScope.launch {
-            PowerTelemetryEngine.state.collect { state ->
-                syncHudOverlay(state)
+            combine(
+                PowerTelemetryEngine.state,
+                PowerTelemetryEngine.designConfig,
+            ) { state, design -> state to design }.collect { (state, design) ->
+                syncHudOverlay(state, design)
                 evaluateProtectionAlarms(state)
                 updateForegroundNotification(state)
 
@@ -160,7 +167,7 @@ class PowerMonitorService : Service() {
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun syncHudOverlay(state: PowerTelemetryState) {
+    private fun syncHudOverlay(state: PowerTelemetryState, design: DesignConfigSnapshot) {
         val canDraw = Settings.canDrawOverlays(this)
         if (!state.settings.hudEnabled || !canDraw) {
             removeHudOverlay()
@@ -170,7 +177,7 @@ class PowerMonitorService : Service() {
         if (hudContainer == null) {
             createHudView(state)
         }
-        updateHudAppearanceAndText(state)
+        updateHudAppearanceAndText(state, design)
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -187,23 +194,38 @@ class PowerMonitorService : Service() {
             elevation = 8 * density
         }
 
+        val textColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.START
+        }
+
         val metricsTv = TextView(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            typeface = Typeface.MONOSPACE
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             setSingleLine(true)
         }
+
+        val subMetricsTv = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            typeface = Typeface.MONOSPACE
+            setSingleLine(true)
+            visibility = View.GONE
+        }
+
+        textColumn.addView(metricsTv)
+        textColumn.addView(subMetricsTv)
 
         val closeTv = TextView(this).apply {
             text = "  ×"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.argb(190, 220, 230, 240))
+            setTextColor(Color.argb(190, 220, 230, 220))
             setOnClickListener {
                 PowerTelemetryEngine.updateSettings { it.copy(hudEnabled = false) }
             }
         }
 
-        container.addView(metricsTv)
+        container.addView(textColumn)
         container.addView(closeTv)
 
         val params = WindowManager.LayoutParams(
@@ -247,35 +269,96 @@ class PowerMonitorService : Service() {
             wm.addView(container, params)
             hudContainer = container
             hudMetricsText = metricsTv
+            hudSubMetricsText = subMetricsTv
             hudCloseText = closeTv
             hudParams = params
         }
     }
 
-    private fun updateHudAppearanceAndText(state: PowerTelemetryState) {
+    private fun updateHudAppearanceAndText(state: PowerTelemetryState, design: DesignConfigSnapshot) {
         val container = hudContainer ?: return
         val metricsTv = hudMetricsText ?: return
+        val subMetricsTv = hudSubMetricsText ?: return
 
-        val accentArgb = state.settings.hudAccent.argbInt
-        val alphaByte = (state.settings.hudOpacity.coerceIn(0.4f, 1.0f) * 255).roundToInt()
-        val bgColor = Color.argb(alphaByte, 9, 13, 19)
-        val strokeColor = Color.argb((alphaByte * 0.78f).roundToInt().coerceIn(80, 255), Color.red(accentArgb), Color.green(accentArgb), Color.blue(accentArgb))
-        val density = resources.displayMetrics.density
-
-        val bgDrawable = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 999f * density
-            setColor(bgColor)
-            setStroke((1.3f * density).roundToInt().coerceAtLeast(1), strokeColor)
+        val accentArgb = when (design.accentSwatch) {
+            AccentSwatch.DYNAMIC_AUTO -> if (state.isCharging) 0xFF7CE7A7.toInt() else 0xFFF9B384.toInt()
+            else -> design.accentSwatch.argbInt
         }
-        container.background = bgDrawable
+        val alphaByte = (state.settings.hudOpacity.coerceIn(0.4f, 1.0f) * 255).roundToInt()
+        val density = resources.displayMetrics.density
 
         val boltPrefix = if (state.isCharging) "⚡" else "•"
         val wattsStr = String.format(Locale.US, "%.1fW", state.wattage)
-        val maStr = "${abs(state.currentNowMa)}mA"
+        val maStr = "${if (state.currentNowMa >= 0) "+" else ""}${state.currentNowMa}mA"
         val tempStr = state.settings.tempUnit.format(state.temperatureCelsius)
-        metricsTv.text = "$boltPrefix $wattsStr  $maStr  $tempStr"
-        metricsTv.setTextColor(accentArgb)
+        val voltStr = String.format(Locale.US, "%.2fV", state.rawVoltageMv / 1000f)
+
+        when (design.floatingPillStyle) {
+            FloatingPillStyle.COMPACT_SINGLE_LINE -> {
+                val bgColor = Color.argb(alphaByte, 17, 20, 17)
+                val strokeColor = Color.argb(
+                    (alphaByte * 0.78f).roundToInt().coerceIn(80, 255),
+                    Color.red(accentArgb),
+                    Color.green(accentArgb),
+                    Color.blue(accentArgb),
+                )
+                container.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f * density
+                    setColor(bgColor)
+                    setStroke((1.3f * density).roundToInt().coerceAtLeast(1), strokeColor)
+                }
+                metricsTv.text = "$boltPrefix $wattsStr  $maStr  $tempStr"
+                metricsTv.setTextColor(accentArgb)
+                subMetricsTv.visibility = View.GONE
+            }
+
+            FloatingPillStyle.TWO_ROW_BOXED -> {
+                val bgColor = Color.argb(alphaByte.coerceAtLeast(215), 22, 26, 22)
+                val strokeColor = Color.argb(
+                    (alphaByte * 0.72f).roundToInt().coerceIn(80, 255),
+                    Color.red(accentArgb),
+                    Color.green(accentArgb),
+                    Color.blue(accentArgb),
+                )
+                container.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 14f * density
+                    setColor(bgColor)
+                    setStroke((1.4f * density).roundToInt().coerceAtLeast(1), strokeColor)
+                }
+                metricsTv.text = "$boltPrefix $wattsStr  •  ${state.levelPercent}%"
+                metricsTv.setTextColor(accentArgb)
+                subMetricsTv.visibility = View.VISIBLE
+                subMetricsTv.text = "$maStr  •  $tempStr  •  $voltStr"
+                subMetricsTv.setTextColor(Color.argb(220, 224, 232, 224))
+            }
+
+            FloatingPillStyle.GLASS_PILL -> {
+                val glassAlpha = (alphaByte * 0.56f).roundToInt().coerceIn(95, 190)
+                val bgColor = Color.argb(
+                    glassAlpha,
+                    (Color.red(accentArgb) * 0.16f + 16).roundToInt().coerceIn(0, 255),
+                    (Color.green(accentArgb) * 0.16f + 18).roundToInt().coerceIn(0, 255),
+                    (Color.blue(accentArgb) * 0.16f + 16).roundToInt().coerceIn(0, 255),
+                )
+                val strokeColor = Color.argb(
+                    230,
+                    Color.red(accentArgb),
+                    Color.green(accentArgb),
+                    Color.blue(accentArgb),
+                )
+                container.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f * density
+                    setColor(bgColor)
+                    setStroke((1.8f * density).roundToInt().coerceAtLeast(2), strokeColor)
+                }
+                metricsTv.text = "$boltPrefix $wattsStr • $tempStr • ${state.levelPercent}%"
+                metricsTv.setTextColor(Color.WHITE)
+                subMetricsTv.visibility = View.GONE
+            }
+        }
     }
 
     private fun removeHudOverlay() {
@@ -283,6 +366,7 @@ class PowerMonitorService : Service() {
         runCatching { windowManager?.removeView(container) }
         hudContainer = null
         hudMetricsText = null
+        hudSubMetricsText = null
         hudCloseText = null
         hudParams = null
     }

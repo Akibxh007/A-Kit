@@ -21,9 +21,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.example.data.AccentSwatch
+import com.example.data.ClockNumberStyle
+import com.example.data.FloatingPillStyle
+import com.example.data.GaugeStyle
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
+
+data class DesignConfigSnapshot(
+    val gaugeStyle: GaugeStyle = GaugeStyle.MINIMAL_THIN_ARC,
+    val floatingPillStyle: FloatingPillStyle = FloatingPillStyle.COMPACT_SINGLE_LINE,
+    val clockNumberStyle: ClockNumberStyle = ClockNumberStyle.MONTSERRAT_BOLD,
+    val accentSwatch: AccentSwatch = AccentSwatch.DYNAMIC_AUTO,
+)
 
 /**
  * Shared local hardware telemetry engine used by PowerViewModel, ChargingAodActivity,
@@ -40,6 +51,9 @@ object PowerTelemetryEngine {
 
     private val _state = MutableStateFlow(PowerTelemetryState())
     val state: StateFlow<PowerTelemetryState> = _state.asStateFlow()
+
+    private val _designConfig = MutableStateFlow(DesignConfigSnapshot())
+    val designConfig: StateFlow<DesignConfigSnapshot> = _designConfig.asStateFlow()
 
     @Volatile
     private var initialized = false
@@ -184,6 +198,20 @@ object PowerTelemetryEngine {
 
     fun setAutoLaunchAodOnPlugIn(enabled: Boolean) {
         autoLaunchAodEnabled = enabled
+    }
+
+    fun updateDesignConfig(
+        gaugeStyle: GaugeStyle,
+        floatingPillStyle: FloatingPillStyle,
+        clockNumberStyle: ClockNumberStyle,
+        accentSwatch: AccentSwatch,
+    ) {
+        _designConfig.value = DesignConfigSnapshot(
+            gaugeStyle = gaugeStyle,
+            floatingPillStyle = floatingPillStyle,
+            clockNumberStyle = clockNumberStyle,
+            accentSwatch = accentSwatch,
+        )
     }
 
     @Synchronized
@@ -483,6 +511,7 @@ object PowerTelemetryEngine {
                     tempCelsius = tempC,
                     levelPercent = percent,
                     currentMa = signedMa,
+                    voltageMv = effectiveVoltageMv,
                 )
                 (prev.sessionSamples + sample).takeLast(60)
             } else {
