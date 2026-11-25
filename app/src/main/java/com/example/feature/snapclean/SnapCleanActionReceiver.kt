@@ -43,6 +43,13 @@ class SnapCleanActionReceiver : BroadcastReceiver() {
                         repo.setAutoWatchEnabled(false)
                         SnapCleanWatcherService.stop(context)
                     }
+
+                    ACTION_RESTART_WATCHER -> {
+                        val settings = repo.getSettingsOnce()
+                        if (settings.autoWatchEnabled) {
+                            SnapCleanWatcherService.start(context)
+                        }
+                    }
                 }
 
                 if (notificationId > 0) {
@@ -60,5 +67,6 @@ class SnapCleanActionReceiver : BroadcastReceiver() {
         const val ACTION_KEEP_FOREVER = "com.example.feature.snapclean.ACTION_KEEP_FOREVER"
         const val ACTION_DISMISSED = "com.example.feature.snapclean.ACTION_DISMISSED"
         const val ACTION_STOP_WATCHER = "com.example.feature.snapclean.ACTION_STOP_WATCHER"
+        const val ACTION_RESTART_WATCHER = "com.example.feature.snapclean.ACTION_RESTART_WATCHER"
     }
 }

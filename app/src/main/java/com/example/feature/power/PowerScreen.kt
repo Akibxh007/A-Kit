@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Power
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Thermostat
@@ -88,6 +89,7 @@ fun PowerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var activeSheet by rememberSaveable { mutableStateOf(PowerActiveSheet.NONE) }
+    var selectedDetailMetric by rememberSaveable { mutableStateOf<PowerMetricType?>(null) }
 
     // Lifecycle-aware polling (1500ms ONLY while PowerScreen is visible) & permission refresh
     DisposableEffect(lifecycleOwner) {
@@ -436,7 +438,7 @@ fun PowerScreen(
                         icon = Icons.Rounded.ElectricBolt,
                         accentColor = design.chargingAccent,
                         sparklineValues = voltageSeries,
-                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        onClick = { selectedDetailMetric = PowerMetricType.VOLTAGE },
                         testTagName = "bento_metric_voltage",
                         modifier = Modifier.weight(1f),
                     )
@@ -447,7 +449,7 @@ fun PowerScreen(
                         icon = Icons.Rounded.Bolt,
                         accentColor = heroAccent,
                         sparklineValues = currentSeries,
-                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        onClick = { selectedDetailMetric = PowerMetricType.CURRENT },
                         testTagName = "bento_metric_current",
                         modifier = Modifier.weight(1f),
                     )
@@ -465,7 +467,7 @@ fun PowerScreen(
                         icon = Icons.Rounded.Speed,
                         accentColor = MaterialTheme.colorScheme.primary,
                         sparklineValues = wattageSeries,
-                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        onClick = { selectedDetailMetric = PowerMetricType.WATTAGE },
                         testTagName = "bento_metric_wattage",
                         modifier = Modifier.weight(1f),
                     )
@@ -480,13 +482,13 @@ fun PowerScreen(
                         icon = Icons.Rounded.Thermostat,
                         accentColor = design.dischargingAccent,
                         sparklineValues = tempSeries,
-                        onClick = viewModel::toggleTempUnit,
+                        onClick = { selectedDetailMetric = PowerMetricType.TEMPERATURE },
                         testTagName = "bento_metric_temp",
                         modifier = Modifier.weight(1f),
                     )
                 }
 
-                // Row 3: HEALTH | MAX CAPACITY
+                // Row 3: HEALTH | PLUGGED
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -498,22 +500,35 @@ fun PowerScreen(
                         icon = Icons.Rounded.HealthAndSafety,
                         accentColor = design.chargingAccent,
                         sparklineValues = levelSeries,
-                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
+                        onClick = { selectedDetailMetric = PowerMetricType.HEALTH },
                         testTagName = "power_health_card",
                         modifier = Modifier.weight(1f),
                     )
                     BentoMetricCard(
-                        label = "MAX CAPACITY",
-                        value = maxCapValue,
-                        subtext = "Design ${settings.designCapacityMah} mAh",
-                        icon = Icons.Rounded.BatteryStd,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        sparklineValues = levelSeries,
-                        onClick = { activeSheet = PowerActiveSheet.DIAGNOSTICS },
-                        testTagName = "bento_metric_capacity",
+                        label = "PLUGGED",
+                        value = state.pluggedLabel,
+                        subtext = state.statusLabel,
+                        icon = Icons.Rounded.Power,
+                        accentColor = heroAccent,
+                        sparklineValues = wattageSeries,
+                        onClick = { selectedDetailMetric = PowerMetricType.PLUGGED },
+                        testTagName = "bento_metric_plugged",
                         modifier = Modifier.weight(1f),
                     )
                 }
+
+                // Row 4: MAX CAPACITY
+                BentoMetricCard(
+                    label = "MAX CAPACITY",
+                    value = maxCapValue,
+                    subtext = "Design ${settings.designCapacityMah} mAh • Tap for capacity insights",
+                    icon = Icons.Rounded.BatteryStd,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    sparklineValues = levelSeries,
+                    onClick = { selectedDetailMetric = PowerMetricType.MAX_CAPACITY },
+                    testTagName = "bento_metric_capacity",
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
 
@@ -805,6 +820,15 @@ fun PowerScreen(
         }
 
         PowerActiveSheet.NONE -> Unit
+    }
+
+    selectedDetailMetric?.let { metric ->
+        PowerMetricDetailSheet(
+            metricType = metric,
+            state = state,
+            onToggleTempUnit = viewModel::toggleTempUnit,
+            onDismiss = { selectedDetailMetric = null },
+        )
     }
 }
 

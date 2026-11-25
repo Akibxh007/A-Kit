@@ -37,8 +37,8 @@ jobs:
 
       - name: Prepare Release APK
         run: |
-          VERSION_NAME=${GITHUB_REF_NAME:-v1.1.0}
-          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.1.0"; fi
+          VERSION_NAME=${GITHUB_REF_NAME:-v1.2.0}
+          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.2.0"; fi
           mkdir -p release-apk
           cp app/build/outputs/apk/debug/app-debug.apk "release-apk/A-Kit-${VERSION_NAME}.apk"
 
@@ -51,8 +51,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.1.0' }}
-          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.1.0' }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0' }}
+          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0' }}"
           body: |
             ### A-Kit — Offline Native Utility Suite
             - **100% Offline & Zero Ads:** No internet permission, no trackers.

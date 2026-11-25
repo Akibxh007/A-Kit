@@ -33,7 +33,7 @@ data class DesignConfigSnapshot(
     val gaugeStyle: GaugeStyle = GaugeStyle.MINIMAL_THIN_ARC,
     val floatingPillStyle: FloatingPillStyle = FloatingPillStyle.COMPACT_SINGLE_LINE,
     val clockNumberStyle: ClockNumberStyle = ClockNumberStyle.MONTSERRAT_BOLD,
-    val accentSwatch: AccentSwatch = AccentSwatch.DYNAMIC_AUTO,
+    val accentSwatch: AccentSwatch = AccentSwatch.ELECTRIC_BLUE,
 )
 
 /**
@@ -70,8 +70,11 @@ object PowerTelemetryEngine {
     @Volatile
     private var isServiceActive = false
 
-    @Volatile
-    private var autoLaunchAodEnabled = false
+    private val _autoLaunchAodEnabled = MutableStateFlow(false)
+    val autoLaunchAodEnabledFlow: StateFlow<Boolean> = _autoLaunchAodEnabled.asStateFlow()
+
+    val isAutoLaunchAodEnabled: Boolean
+        get() = _autoLaunchAodEnabled.value
 
     private var pollingJob: Job? = null
     private var lastIntent: Intent? = null
@@ -106,13 +109,10 @@ object PowerTelemetryEngine {
                 processReading(intent, recordSample = true)
 
                 // Auto-launch Charging AOD on fresh plug-in if enabled in Settings
-                if (prevCharging == false && nowCharging && autoLaunchAodEnabled && !isAodVisible) {
+                if (prevCharging == false && nowCharging && _autoLaunchAodEnabled.value && !isAodVisible) {
                     val ctx = appContext
                     if (ctx != null) {
-                        val aodIntent = Intent(ctx, ChargingAodActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        }
-                        runCatching { ctx.startActivity(aodIntent) }
+                        PowerMonitorService.launchChargingAodImmediately(ctx)
                     }
                 }
             }
@@ -197,7 +197,13 @@ object PowerTelemetryEngine {
     }
 
     fun setAutoLaunchAodOnPlugIn(enabled: Boolean) {
-        autoLaunchAodEnabled = enabled
+        _autoLaunchAodEnabled.value = enabled
+        val ctx = appContext ?: return
+        PowerMonitorService.syncServiceState(
+            context = ctx,
+            settings = _state.value.settings,
+            autoLaunchAodOnPlugIn = enabled,
+        )
     }
 
     fun updateDesignConfig(
@@ -513,7 +519,14 @@ object PowerTelemetryEngine {
                     currentMa = signedMa,
                     voltageMv = effectiveVoltageMv,
                 )
-                (prev.sessionSamples + sample).takeLast(60)
+                val sixHourCutoff = now - SIX_HOURS_MS
+                val combined = prev.sessionSamples + sample
+                val withinWindow = if (combined.size > MAX_RETAINED_SAMPLES) {
+                    combined.filter { it.timestampMs >= sixHourCutoff }.takeLast(MAX_RETAINED_SAMPLES)
+                } else {
+                    combined
+                }
+                withinWindow
             } else {
                 prev.sessionSamples
             }
@@ -727,4 +740,6 @@ object PowerTelemetryEngine {
     }
 
     private const val NOMINAL_CELL_VOLTAGE_V = 3.85f
+    private const val SIX_HOURS_MS = 6L * 3_600_000L
+    private const val MAX_RETAINED_SAMPLES = 3_600
 }

@@ -131,22 +131,57 @@ object DropOfflineWifiManager {
     }
 
     /**
+     * Explicitly binds the current app process to [network] (or the active `TRANSPORT_WIFI`
+     * network) using `ConnectivityManager.bindProcessToNetwork()` so local Offline Hotspot HTTP
+     * discovery and large file transfers NEVER leak onto Mobile Data when the hotspot lacks
+     * internet validation.
+     */
+    fun bindProcessToWifi(context: Context, network: Network? = null): Network? {
+        if (isHotspotActive) return null // Never bind a hosting hotspot device away from its own AP
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return network
+        val target = network ?: findActiveWifiNetwork(context) ?: return null
+        runCatching { cm.bindProcessToNetwork(target) }
+        return target
+    }
+
+    fun unbindProcessNetwork(context: Context) {
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        runCatching { cm?.bindProcessToNetwork(null) }
+    }
+
+    /**
      * Dynamically reads the real hotspot host gateway IPv4 address from a connected [Network]'s
      * [LinkProperties] (`dhcpServerAddress` on Android 11+, `routes` gateway on all Android versions,
-     * or `.1` host derivation from the assigned client subnet) — critical for OEMs like Motorola,
-     * Samsung, and Pixel that assign `192.168.49.1`, `192.168.137.1`, or randomized `192.168.x.y`
-     * addresses to `LocalOnlyHotspot`.
+     * `WifiManager.dhcpInfo.gateway` fallback on OEM ROMs, or `.1` host derivation from the
+     * assigned client subnet).
      */
+    @Suppress("DEPRECATION")
     fun resolveGatewayIpv4(context: Context, network: Network?): String? {
-        if (network == null) return activeBoundGatewayIp
         val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return activeBoundGatewayIp
-        val lp = runCatching { cm.getLinkProperties(network) }.getOrNull()
-        val resolved = extractGatewayIpv4(lp)
-        if (resolved != null && network == activeBoundNetwork) {
-            activeBoundGatewayIp = resolved
+        if (network != null && cm != null) {
+            val lp = runCatching { cm.getLinkProperties(network) }.getOrNull()
+            val resolved = extractGatewayIpv4(lp)
+            if (resolved != null) {
+                if (network == activeBoundNetwork) {
+                    activeBoundGatewayIp = resolved
+                }
+                return resolved
+            }
         }
-        return resolved ?: if (network == activeBoundNetwork) activeBoundGatewayIp else null
+        // Fallback: read DHCP gateway / serverAddress directly from WifiManager (critical on HyperOS/MIUI/Samsung)
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val dhcp = runCatching { wm?.dhcpInfo }.getOrNull()
+        if (dhcp != null) {
+            val rawGw = if (dhcp.gateway != 0) dhcp.gateway else dhcp.serverAddress
+            if (rawGw != 0) {
+                val ip = "${rawGw and 0xFF}.${(rawGw shr 8) and 0xFF}.${(rawGw shr 16) and 0xFF}.${(rawGw shr 24) and 0xFF}"
+                if (ip != "0.0.0.0" && !ip.startsWith("127.")) {
+                    return ip
+                }
+            }
+        }
+        return if (network == activeBoundNetwork) activeBoundGatewayIp else null
     }
 
     fun extractGatewayIpv4(linkProperties: LinkProperties?): String? {

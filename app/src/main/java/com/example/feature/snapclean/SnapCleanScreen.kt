@@ -222,17 +222,17 @@ fun SnapCleanScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Row(
+                                    modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
                                     Text(
                                         text = "Auto-Watch Screenshots",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
+                                        maxLines = 2,
                                         modifier = Modifier.weight(1f, fill = false),
                                     )
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Surface(
                                         shape = CircleShape,
                                         color = if (state.isWatcherServiceRunning) {
@@ -257,7 +257,7 @@ fun SnapCleanScreen(
                                 }
                                 Text(
                                     text = if (state.isWatcherServiceRunning) {
-                                        "Foreground ContentObserver watching Screenshots"
+                                        "Persistent ContentObserver + FileObserver active"
                                     } else {
                                         "Enable for instant 3-action capture notifications"
                                     },

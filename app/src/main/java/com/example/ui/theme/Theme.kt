@@ -29,8 +29,8 @@ data class AKitDesignTokens(
     val gaugeStyle: GaugeStyle = GaugeStyle.MINIMAL_THIN_ARC,
     val floatingPillStyle: FloatingPillStyle = FloatingPillStyle.COMPACT_SINGLE_LINE,
     val clockNumberStyle: ClockNumberStyle = ClockNumberStyle.MONTSERRAT_BOLD,
-    val accentSwatch: AccentSwatch = AccentSwatch.DYNAMIC_AUTO,
-    val chargingAccent: Color = MintEmerald,
+    val accentSwatch: AccentSwatch = AccentSwatch.ELECTRIC_BLUE,
+    val chargingAccent: Color = ElectricBluePrimary,
     val dischargingAccent: Color = CoralPeach,
 )
 
@@ -204,7 +204,7 @@ fun AKitTheme(
     gaugeStyle: GaugeStyle = GaugeStyle.MINIMAL_THIN_ARC,
     floatingPillStyle: FloatingPillStyle = FloatingPillStyle.COMPACT_SINGLE_LINE,
     clockNumberStyle: ClockNumberStyle = ClockNumberStyle.MONTSERRAT_BOLD,
-    accentSwatch: AccentSwatch = AccentSwatch.DYNAMIC_AUTO,
+    accentSwatch: AccentSwatch = AccentSwatch.ELECTRIC_BLUE,
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()

@@ -69,7 +69,7 @@ enum class AccentSwatch(val storageKey: String, val label: String, val argbInt: 
 
     companion object {
         fun fromKey(key: String?): AccentSwatch =
-            entries.firstOrNull { it.storageKey == key } ?: DYNAMIC_AUTO
+            entries.firstOrNull { it.storageKey == key } ?: ELECTRIC_BLUE
     }
 }
 
@@ -83,7 +83,7 @@ data class AppPreferences(
     val gaugeStyle: GaugeStyle = GaugeStyle.MINIMAL_THIN_ARC,
     val floatingPillStyle: FloatingPillStyle = FloatingPillStyle.COMPACT_SINGLE_LINE,
     val clockNumberStyle: ClockNumberStyle = ClockNumberStyle.MONTSERRAT_BOLD,
-    val accentSwatch: AccentSwatch = AccentSwatch.DYNAMIC_AUTO,
+    val accentSwatch: AccentSwatch = AccentSwatch.ELECTRIC_BLUE,
 )
 
 private val Context.akitDataStore: DataStore<Preferences> by preferencesDataStore(

@@ -348,6 +348,7 @@ object LocalNetworkUtils {
         return nameLower.startsWith("ap") ||
             nameLower.startsWith("swlan") ||
             nameLower.startsWith("softap") ||
+            nameLower.startsWith("tether") ||
             nameLower == "wlan1" ||
             nameLower == "wlan2" ||
             nameLower.startsWith("p2p")
@@ -361,10 +362,11 @@ object LocalNetworkUtils {
     }
 
     /**
-     * Resolves the active Local-Only Hotspot (`AndroidShare_xxxx`) gateway IPv4 address
-     * from `ap0`, `ap_br_*`, `swlan0`, `softap0`, `p2p*`, `wlan1`/`wlan2`, or `wlan0`
-     * (including `192.168.43.1`, `192.168.49.1`, `192.168.137.1`, and Android 11+ randomized
-     * `PrivateAddressCoordinator` subnets like `192.168.x.y`).
+     * Resolves the active Local-Only Hotspot (`AndroidShare_xxxx`) or Portable Hotspot gateway
+     * IPv4 address from `ap0`, `ap_br_*`, `swlan0`, `softap0`, `tether*`, `p2p*`, `wlan1`/`wlan2`,
+     * or `wlan0` (including `192.168.43.1`, `192.168.49.1`, `192.168.137.1`, and Android 11+
+     * randomized `PrivateAddressCoordinator` addresses like `192.168.x.y` even when Wi-Fi was
+     * off prior to starting the hotspot).
      *
      * Strictly ignores cellular/mobile-data interfaces and `172.x.x.x` carrier subnets so the
      * sender LAN badge and QR code NEVER advertise an unreachable mobile-data IP.
@@ -403,6 +405,9 @@ object LocalNetworkUtils {
                         name.startsWith("wlan") && host.startsWith("192.168.") && host.endsWith(".1") -> 6
                         name.startsWith("wlan") && host.startsWith("192.168.") &&
                             !preHotspotWlanIp.isNullOrBlank() && host != preHotspotWlanIp -> 7
+                        // Android 11+ randomized LocalOnlyHotspot address on wlan0 when Wi-Fi was disconnected
+                        name.startsWith("wlan") && host.startsWith("192.168.") &&
+                            preHotspotWlanIp.isNullOrBlank() -> 8
                         else -> 99
                     }
                     if (priority < 99) {
@@ -412,6 +417,38 @@ object LocalNetworkUtils {
             }
             candidates.minByOrNull { it.first }?.second
         }.getOrNull()
+    }
+
+    /**
+     * Enumerates candidate `.1` hotspot gateway IPs derived from all active local Wi-Fi/AP
+     * IPv4 interfaces plus standard Android hotspot gateway subnets (`192.168.43.1`, `192.168.49.1`,
+     * `192.168.137.1`) for fast peer discovery on the receiver side.
+     */
+    fun detectReceiverHotspotGatewayCandidates(): List<String> {
+        val result = LinkedHashSet<String>()
+        runCatching {
+            val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            for (nif in interfaces) {
+                if (!nif.isUp || nif.isLoopback || nif.isVirtual) continue
+                val name = nif.name.lowercase(Locale.US)
+                if (!isAllowedLanInterface(name)) continue
+                for (addr in nif.inetAddresses.toList()) {
+                    if (addr !is Inet4Address || addr.isLoopbackAddress || addr.isLinkLocalAddress) continue
+                    val host = addr.hostAddress ?: continue
+                    if (host.startsWith("192.168.") || host.startsWith("10.")) {
+                        val prefix = host.substringBeforeLast('.', "")
+                        if (prefix.isNotBlank()) {
+                            val gw = "$prefix.1"
+                            if (gw != host) result.add(gw)
+                        }
+                    }
+                }
+            }
+        }
+        result.add("192.168.43.1")
+        result.add("192.168.49.1")
+        result.add("192.168.137.1")
+        return result.toList()
     }
 
     /**

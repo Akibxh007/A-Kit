@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.MonoLabelStyle
 import java.util.Locale
@@ -858,7 +859,7 @@ private fun AlarmConfigCard(
                         modifier = Modifier.size(22.dp),
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -867,6 +868,9 @@ private fun AlarmConfigCard(
                                 text = title,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
                             )
                             Surface(
                                 shape = CircleShape,
@@ -876,6 +880,8 @@ private fun AlarmConfigCard(
                                     text = valueLabel,
                                     style = MonoLabelStyle,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                 )
                             }
@@ -887,6 +893,7 @@ private fun AlarmConfigCard(
                         )
                     }
                 }
+                Spacer(modifier = Modifier.width(8.dp))
                 Switch(
                     checked = enabled,
                     onCheckedChange = onToggle,

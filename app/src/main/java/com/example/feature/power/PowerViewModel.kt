@@ -18,13 +18,19 @@ class PowerViewModel(application: Application) : AndroidViewModel(application) {
     init {
         PowerTelemetryEngine.ensureInitialized(application)
 
-        // Keep Foreground Service synchronized whenever HUD or Protection Alarms settings change
+        // Keep Foreground Service synchronized whenever HUD, Protection Alarms, or Auto-Launch AOD change
         viewModelScope.launch {
-            PowerTelemetryEngine.state
-                .map { it.settings }
+            kotlinx.coroutines.flow.combine(
+                PowerTelemetryEngine.state.map { it.settings }.distinctUntilChanged(),
+                PowerTelemetryEngine.autoLaunchAodEnabledFlow,
+            ) { settings, autoAod -> settings to autoAod }
                 .distinctUntilChanged()
-                .collect { settings ->
-                    PowerMonitorService.syncServiceState(getApplication(), settings)
+                .collect { (settings, autoAod) ->
+                    PowerMonitorService.syncServiceState(
+                        context = getApplication(),
+                        settings = settings,
+                        autoLaunchAodOnPlugIn = autoAod,
+                    )
                 }
         }
     }

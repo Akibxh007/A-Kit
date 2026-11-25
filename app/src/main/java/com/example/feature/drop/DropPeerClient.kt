@@ -39,7 +39,9 @@ object DropPeerClient {
         } else {
             url.openConnection(Proxy.NO_PROXY)
         }
-        return raw as HttpURLConnection
+        return (raw as HttpURLConnection).apply {
+            setRequestProperty("Connection", "close")
+        }
     }
 
     /**

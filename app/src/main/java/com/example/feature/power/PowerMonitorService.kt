@@ -1,13 +1,17 @@
 package com.example.feature.power
 
 import android.annotation.SuppressLint
+import android.app.AlarmManager
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -17,6 +21,8 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -33,6 +39,7 @@ import androidx.core.app.ServiceCompat
 import com.example.MainActivity
 import com.example.data.AccentSwatch
 import com.example.data.FloatingPillStyle
+import com.example.data.ThemePreferencesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -58,6 +65,33 @@ class PowerMonitorService : Service() {
     private var lowAlarmLatched = false
     private var overheatAlarmLatched = false
 
+    @Volatile
+    private var shouldStayPersistent = true
+
+    @Volatile
+    private var autoLaunchAodEnabled = false
+
+    /**
+     * Zero-delay dynamic BroadcastReceiver for charger plug-in & unplug events.
+     * Runs continuously inside this persistent foreground service even when A-Kit is
+     * closed or swiped from Recent Apps and the device screen is locked.
+     */
+    private val powerConnectionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            when (action) {
+                Intent.ACTION_POWER_CONNECTED -> {
+                    if (autoLaunchAodEnabled || PowerTelemetryEngine.isAutoLaunchAodEnabled) {
+                        launchChargingAodImmediately(applicationContext)
+                    }
+                }
+                Intent.ACTION_POWER_DISCONNECTED -> {
+                    dismissChargingAodImmediately(applicationContext)
+                }
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -68,16 +102,52 @@ class PowerMonitorService : Service() {
         startForegroundSafely(PowerTelemetryEngine.state.value)
         PowerTelemetryEngine.setServiceRunning(true)
 
+        // Dynamically register zero-delay charger connection / disconnection listener
+        val powerFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(powerConnectionReceiver, powerFilter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(powerConnectionReceiver, powerFilter)
+        }
+
+        // Hydrate Design Studio & Auto-Launch AOD preferences directly from DataStore so
+        // cold service restarts after task removal retain full configuration.
+        val themePrefsRepo = ThemePreferencesRepository(applicationContext)
+        serviceScope.launch {
+            themePrefsRepo.preferencesFlow.collect { prefs ->
+                autoLaunchAodEnabled = prefs.autoLaunchAodOnPlugIn
+                PowerTelemetryEngine.updateDesignConfig(
+                    gaugeStyle = prefs.gaugeStyle,
+                    floatingPillStyle = prefs.floatingPillStyle,
+                    clockNumberStyle = prefs.clockNumberStyle,
+                    accentSwatch = prefs.accentSwatch,
+                )
+                if (PowerTelemetryEngine.isAutoLaunchAodEnabled != prefs.autoLaunchAodOnPlugIn) {
+                    PowerTelemetryEngine.setAutoLaunchAodOnPlugIn(prefs.autoLaunchAodOnPlugIn)
+                }
+            }
+        }
+
         serviceScope.launch {
             combine(
                 PowerTelemetryEngine.state,
                 PowerTelemetryEngine.designConfig,
-            ) { state, design -> state to design }.collect { (state, design) ->
+                PowerTelemetryEngine.autoLaunchAodEnabledFlow,
+            ) { state, design, autoAod ->
+                Triple(state, design, autoAod)
+            }.collect { (state, design, autoAod) ->
+                autoLaunchAodEnabled = autoAod
+                val keepAlive = state.settings.requiresBackgroundService || autoAod
+                shouldStayPersistent = keepAlive
+
                 syncHudOverlay(state, design)
                 evaluateProtectionAlarms(state)
-                updateForegroundNotification(state)
+                updateForegroundNotification(state, autoAod)
 
-                if (!state.settings.requiresBackgroundService) {
+                if (!keepAlive) {
                     stopSelf()
                 }
             }
@@ -87,6 +157,7 @@ class PowerMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                shouldStayPersistent = false
                 PowerTelemetryEngine.updateSettings {
                     it.copy(
                         hudEnabled = false,
@@ -105,15 +176,26 @@ class PowerMonitorService : Service() {
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (shouldStayPersistent) {
+            scheduleImmediateRestart(applicationContext)
+        }
+    }
+
     override fun onDestroy() {
+        runCatching { unregisterReceiver(powerConnectionReceiver) }
         removeHudOverlay()
         PowerTelemetryEngine.setServiceRunning(false)
         serviceScope.cancel()
+        if (shouldStayPersistent) {
+            scheduleImmediateRestart(applicationContext)
+        }
         super.onDestroy()
     }
 
     private fun startForegroundSafely(state: PowerTelemetryState) {
-        val notification = buildOngoingNotification(state)
+        val notification = buildOngoingNotification(state, autoLaunchAodEnabled)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ServiceCompat.startForeground(
                 this,
@@ -126,12 +208,12 @@ class PowerMonitorService : Service() {
         }
     }
 
-    private fun updateForegroundNotification(state: PowerTelemetryState) {
+    private fun updateForegroundNotification(state: PowerTelemetryState, autoAod: Boolean) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        nm.notify(ONGOING_NOTIFICATION_ID, buildOngoingNotification(state))
+        nm.notify(ONGOING_NOTIFICATION_ID, buildOngoingNotification(state, autoAod))
     }
 
-    private fun buildOngoingNotification(state: PowerTelemetryState): Notification {
+    private fun buildOngoingNotification(state: PowerTelemetryState, autoAod: Boolean): Notification {
         val openAppIntent = PendingIntent.getActivity(
             this,
             0,
@@ -152,6 +234,7 @@ class PowerMonitorService : Service() {
         val guardsLabel = buildList {
             if (state.settings.hudEnabled) add("HUD")
             if (state.settings.activeAlarmCount > 0) add("${state.settings.activeAlarmCount} Guards")
+            if (autoAod) add("AOD Trigger")
         }.joinToString(" • ").ifEmpty { "Power Telemetry" }
 
         return NotificationCompat.Builder(this, CHANNEL_MONITOR_ID)
@@ -456,59 +539,179 @@ class PowerMonitorService : Service() {
     }
 
     private fun createNotificationChannels() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-
-        val monitorChannel = NotificationChannel(
-            CHANNEL_MONITOR_ID,
-            "Power Telemetry & HUD",
-            NotificationManager.IMPORTANCE_LOW,
-        ).apply {
-            description = "Keeps live wattage HUD and battery protection guards running reliably."
-            setShowBadge(false)
-        }
-
-        val alarmSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        val alertChannel = NotificationChannel(
-            CHANNEL_ALERTS_ID,
-            "Battery Protection Alarms",
-            NotificationManager.IMPORTANCE_HIGH,
-        ).apply {
-            description = "Alerts for charge limit, low battery, and overheat thermal thresholds."
-            enableVibration(true)
-            setSound(
-                alarmSoundUri,
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build(),
-            )
-        }
-
-        nm.createNotificationChannel(monitorChannel)
-        nm.createNotificationChannel(alertChannel)
+        ensureChannelsStatic(this)
     }
 
     companion object {
         private const val CHANNEL_MONITOR_ID = "akit_power_monitor_channel"
         private const val CHANNEL_ALERTS_ID = "akit_power_alerts_channel"
+        private const val CHANNEL_AOD_LAUNCH_ID = "akit_aod_lockscreen_launch_channel"
         private const val ONGOING_NOTIFICATION_ID = 4101
         private const val ALERT_HIGH_ID = 4102
         private const val ALERT_LOW_ID = 4103
         private const val ALERT_OVERHEAT_ID = 4104
+        const val AOD_LAUNCH_NOTIFICATION_ID = 4109
+        private const val RESTART_REQUEST_CODE = 4190
 
         const val ACTION_SYNC = "com.example.feature.power.ACTION_SYNC"
         const val ACTION_STOP = "com.example.feature.power.ACTION_STOP"
         const val ACTION_DISMISS_HUD = "com.example.feature.power.ACTION_DISMISS_HUD"
 
-        fun syncServiceState(context: Context, settings: PowerSettings) {
-            val app = context.applicationContext
-            val intent = Intent(app, PowerMonitorService::class.java).apply {
-                action = if (settings.requiresBackgroundService) ACTION_SYNC else ACTION_STOP
+        private fun ensureChannelsStatic(context: Context) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+
+            val monitorChannel = NotificationChannel(
+                CHANNEL_MONITOR_ID,
+                "Power Telemetry & HUD",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "Keeps live wattage HUD, lockscreen Charging AOD trigger, and battery guards active."
+                setShowBadge(false)
             }
-            if (settings.requiresBackgroundService) {
+
+            val alarmSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val alertChannel = NotificationChannel(
+                CHANNEL_ALERTS_ID,
+                "Battery Protection Alarms",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Alerts for charge limit, low battery, and overheat thermal thresholds."
+                enableVibration(true)
+                setSound(
+                    alarmSoundUri,
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+            }
+
+            val aodLaunchChannel = NotificationChannel(
+                CHANNEL_AOD_LAUNCH_ID,
+                "Charging AOD Lockscreen Trigger",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Wakes and displays the AMOLED Charging AOD screen over the lockscreen on plug-in."
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+
+            nm.createNotificationChannel(monitorChannel)
+            nm.createNotificationChannel(alertChannel)
+            nm.createNotificationChannel(aodLaunchChannel)
+        }
+
+        /**
+         * Launches [ChargingAodActivity] with zero delay on charger plug-in—both via direct
+         * `startActivity` (when overlay permission or foreground exemption is available) and via
+         * a silent high-priority `FullScreenIntent` notification when the device is locked so
+         * Android 10–15 background activity launch rules never block lockscreen wake-up.
+         */
+        fun launchChargingAodImmediately(context: Context) {
+            val app = context.applicationContext
+            ensureChannelsStatic(app)
+
+            val aodIntent = Intent(app, ChargingAodActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION,
+                )
+                putExtra(ChargingAodActivity.EXTRA_LAUNCHED_FROM_PLUGIN, true)
+            }
+
+            // Wake screen briefly if screen is currently off
+            runCatching {
+                val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                if (pm != null && !pm.isInteractive) {
+                    @Suppress("DEPRECATION")
+                    val wl = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "AKit:ChargingAodWake",
+                    )
+                    wl.acquire(3_000L)
+                }
+            }
+
+            // 1. Direct zero-delay launch
+            runCatching { app.startActivity(aodIntent) }
+
+            // 2. Lockscreen / background full-screen intent trigger (guarantees Android 10-15 wake over lockscreen)
+            val km = app.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val isLockedOrScreenOff = km?.isKeyguardLocked == true || pm?.isInteractive == false
+            if (isLockedOrScreenOff) {
+                val fullScreenPi = PendingIntent.getActivity(
+                    app,
+                    AOD_LAUNCH_NOTIFICATION_ID,
+                    aodIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+                val notification = NotificationCompat.Builder(app, CHANNEL_AOD_LAUNCH_ID)
+                    .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+                    .setContentTitle("Charging AOD Ready")
+                    .setContentText("Tap to open live AMOLED charging display")
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_ALARM)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setAutoCancel(true)
+                    .setTimeoutAfter(5_000L)
+                    .setFullScreenIntent(fullScreenPi, true)
+                    .build()
+                val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                runCatching { nm?.notify(AOD_LAUNCH_NOTIFICATION_ID, notification) }
+            }
+        }
+
+        fun dismissChargingAodImmediately(context: Context) {
+            val app = context.applicationContext
+            val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            runCatching { nm?.cancel(AOD_LAUNCH_NOTIFICATION_ID) }
+            val dismissIntent = Intent(ChargingAodActivity.ACTION_DISMISS_AOD).apply {
+                setPackage(app.packageName)
+            }
+            runCatching { app.sendBroadcast(dismissIntent) }
+        }
+
+        fun syncServiceState(
+            context: Context,
+            settings: PowerSettings,
+            autoLaunchAodOnPlugIn: Boolean = PowerTelemetryEngine.isAutoLaunchAodEnabled,
+        ) {
+            val app = context.applicationContext
+            val shouldRun = settings.requiresBackgroundService || autoLaunchAodOnPlugIn
+            val intent = Intent(app, PowerMonitorService::class.java).apply {
+                action = if (shouldRun) ACTION_SYNC else ACTION_STOP
+            }
+            if (shouldRun) {
                 runCatching { app.startForegroundService(intent) }
             } else {
                 runCatching { app.stopService(intent) }
+            }
+        }
+
+        fun scheduleImmediateRestart(context: Context) {
+            val app = context.applicationContext
+            val restartIntent = Intent(app, PowerServiceRestartReceiver::class.java).apply {
+                action = PowerServiceRestartReceiver.ACTION_RESTART_POWER_SERVICE
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                app,
+                RESTART_REQUEST_CODE,
+                restartIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val alarmManager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            val triggerAt = SystemClock.elapsedRealtime() + 1_200L
+            runCatching {
+                alarmManager?.setAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerAt,
+                    pendingIntent,
+                )
             }
         }
 

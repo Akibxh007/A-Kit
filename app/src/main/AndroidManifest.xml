@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- SnapClean Smart Screenshot Manager (Zero-Prompt Silent Auto-Delete) -->
@@ -97,19 +99,25 @@
         <service
             android:name=".feature.power.PowerMonitorService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Live battery wattage telemetry, thermal and charge-limit protection alarms, and optional user-enabled floating hardware HUD pill." />
+                android:value="Live battery wattage telemetry, thermal and charge-limit protection alarms, instant lockscreen Charging AOD trigger, and optional user-enabled floating hardware HUD pill." />
         </service>
+
+        <receiver
+            android:name=".feature.power.PowerServiceRestartReceiver"
+            android:exported="false" />
 
         <service
             android:name=".feature.snapclean.SnapCleanWatcherService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Real-time on-device ContentObserver monitoring MediaStore Screenshots folder for instant offline retention scheduling." />
+                android:value="Real-time on-device ContentObserver and FileObserver monitoring Screenshots folder for instant offline retention scheduling." />
         </service>
 
         <receiver
@@ -126,6 +134,7 @@
         <service
             android:name=".feature.drop.DropServerService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

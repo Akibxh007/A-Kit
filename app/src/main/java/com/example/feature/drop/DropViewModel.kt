@@ -272,6 +272,9 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startOfflineHotspot() {
         DropHubCoordinator.clearIdleShutdownMessage()
+        // Release any previous peer process network binding so the host AP interface is unrestricted
+        DropOfflineWifiManager.disconnectBoundNetwork(getApplication())
+        DropOfflineWifiManager.unbindProcessNetwork(getApplication())
         hotspotIpResolveJob?.cancel()
         val preHotspotIp = networkSnapshot.value.localIp
         statusBanner.value = "Starting 100% offline local hotspot..."
@@ -510,27 +513,30 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
             val port = extractPort(primaryUrl)
             var consecutiveFailures = 0
             while (isActive) {
-                // Always bind directly to the saved WifiNetworkSpecifier Network (or active TRANSPORT_WIFI)
-                // so HTTP sockets never escape to Mobile Data
-                val wifiNetwork = specifierNetwork
-                    ?: peerState.value.specifierNetwork
-                    ?: DropOfflineWifiManager.findActiveWifiNetwork(getApplication())
+                // Always bind both the socket and the process directly to the saved WifiNetworkSpecifier
+                // Network (or active TRANSPORT_WIFI) so Offline Hotspot traffic NEVER leaks onto Mobile Data
+                val wifiNetwork = DropOfflineWifiManager.bindProcessToWifi(
+                    context = getApplication(),
+                    network = specifierNetwork
+                        ?: peerState.value.specifierNetwork
+                        ?: DropOfflineWifiManager.findActiveWifiNetwork(getApplication()),
+                )
 
-                // Step 1: Reliable /api/ping handshake across dynamic DHCP/route gateway + QR URL
+                // Step 1: Reliable /api/ping handshake across dynamic DHCP/route gateway + QR URL + hotspot subnets
                 if (!peerState.value.isConnected) {
                     val dynamicGwUrl = DropOfflineWifiManager
                         .resolveGatewayIpv4(getApplication(), wifiNetwork)
                         ?.let { "http://$it:$port" }
 
+                    val subnetCandidates = LocalNetworkUtils
+                        .detectReceiverHotspotGatewayCandidates()
+                        .map { "http://$it:$port" }
+
                     val candidates = buildList {
                         if (dynamicGwUrl != null) add(dynamicGwUrl)
                         add(activeUrl)
                         if (!qrUrl.isNullOrBlank()) add(qrUrl)
-                        if (!peerState.value.wifiSsid.isNullOrBlank()) {
-                            add("http://192.168.43.1:$port")
-                            add("http://192.168.49.1:$port")
-                            add("http://192.168.137.1:$port")
-                        }
+                        addAll(subnetCandidates)
                     }.distinct()
 
                     var connectedDevice: String? = null
@@ -607,8 +613,9 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun resolvePeerNetwork(): Network? {
-        return peerState.value.specifierNetwork
+        val candidate = peerState.value.specifierNetwork
             ?: DropOfflineWifiManager.findActiveWifiNetwork(getApplication())
+        return DropOfflineWifiManager.bindProcessToWifi(getApplication(), candidate) ?: candidate
     }
 
     fun disconnectPeer() {

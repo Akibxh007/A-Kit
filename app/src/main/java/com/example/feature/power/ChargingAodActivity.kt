@@ -1,9 +1,13 @@
 package com.example.feature.power
 
+import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.WindowManager
@@ -20,11 +24,14 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,8 +52,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.ElectricBolt
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FlashlightOff
 import androidx.compose.material.icons.rounded.FlashlightOn
+import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Style
@@ -66,6 +76,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -75,8 +86,8 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -84,37 +95,81 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.MainActivity
+import com.example.data.AccentSwatch
 import com.example.data.ClockNumberStyle
+import com.example.data.GaugeStyle
 import com.example.data.ThemeMode
 import com.example.ui.theme.AKitTheme
 import com.example.ui.theme.MonoLabelStyle
 import com.example.ui.theme.MonoMetricStyle
 import com.example.ui.theme.MontserratAlternatesFontFamily
 import com.example.ui.theme.RobotoCondensedFontFamily
-import com.example.ui.theme.SpaceGroteskFontFamily
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 class ChargingAodActivity : ComponentActivity() {
 
     private var torchEnabled = false
 
+    private val dismissReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            if (action == ACTION_DISMISS_AOD || action == Intent.ACTION_POWER_DISCONNECTED) {
+                finish()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PowerTelemetryEngine.ensureInitialized(applicationContext)
-        enableEdgeToEdge()
+
+        // Show immediately over the lockscreen & turn screen on with zero delay
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        enableEdgeToEdge()
         hideSystemBars()
 
+        val filter = IntentFilter().apply {
+            addAction(ACTION_DISMISS_AOD)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(dismissReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(dismissReceiver, filter)
+        }
+
         setContent {
-            AKitTheme(themeMode = ThemeMode.AMOLED, dynamicColor = false) {
+            val designConfig by PowerTelemetryEngine.designConfig.collectAsStateWithLifecycle()
+            AKitTheme(
+                themeMode = ThemeMode.AMOLED,
+                dynamicColor = false,
+                gaugeStyle = designConfig.gaugeStyle,
+                floatingPillStyle = designConfig.floatingPillStyle,
+                clockNumberStyle = designConfig.clockNumberStyle,
+                accentSwatch = designConfig.accentSwatch,
+            ) {
                 ChargingAodScreen(
                     onExit = { finish() },
+                    onOpenFullDashboard = { openMainDashboard() },
                     onToggleFlashlight = { desired -> toggleTorchSafely(desired) },
                     onLaunchCamera = { launchCameraShortcut() },
                 )
@@ -125,6 +180,9 @@ class ChargingAodActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         PowerTelemetryEngine.setAodVisible(true)
+        // Clear any transient full-screen lockscreen launch notification once visible
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        runCatching { nm?.cancel(PowerMonitorService.AOD_LAUNCH_NOTIFICATION_ID) }
     }
 
     override fun onStop() {
@@ -135,9 +193,22 @@ class ChargingAodActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(dismissReceiver) }
+        super.onDestroy()
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    private fun openMainDashboard() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        runCatching { startActivity(intent) }
+        finish()
     }
 
     private fun toggleTorchSafely(enable: Boolean): Boolean {
@@ -170,18 +241,33 @@ class ChargingAodActivity : ComponentActivity() {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
     }
+
+    companion object {
+        const val ACTION_DISMISS_AOD = "com.example.feature.power.ACTION_DISMISS_AOD"
+        const val EXTRA_LAUNCHED_FROM_PLUGIN = "extra_launched_from_plugin"
+    }
 }
 
 @Composable
 private fun ChargingAodScreen(
     onExit: () -> Unit,
+    onOpenFullDashboard: () -> Unit,
     onToggleFlashlight: (Boolean) -> Boolean,
     onLaunchCamera: () -> Unit,
 ) {
     val state by PowerTelemetryEngine.state.collectAsStateWithLifecycle()
     val designConfig by PowerTelemetryEngine.designConfig.collectAsStateWithLifecycle()
     val settings = state.settings
-    val accent = settings.aodAccent.composeColor
+
+    // Resolve crisp AMOLED accent respecting Design Studio accent swatch and AOD preset
+    val accent = remember(designConfig.accentSwatch, settings.aodAccent, state.isCharging) {
+        when {
+            settings.aodAccent != PowerAccentPreset.CYAN -> settings.aodAccent.composeColor
+            designConfig.accentSwatch == AccentSwatch.DYNAMIC_AUTO ->
+                if (state.isCharging) Color(0xFF7CE7A7) else Color(0xFFF9B384)
+            else -> Color(designConfig.accentSwatch.argbInt)
+        }
+    }
 
     val clockFontFamily = when (designConfig.clockNumberStyle) {
         ClockNumberStyle.MONTSERRAT_BOLD -> MontserratAlternatesFontFamily
@@ -200,8 +286,9 @@ private fun ChargingAodScreen(
     }
 
     var flashlightOn by remember { mutableStateOf(false) }
+    var showMoreInfo by remember { mutableStateOf(false) }
 
-    // Live digital 12-hour clock (clean 11:48 format)
+    // Live digital 12-hour clock + crisp date subtitle (e.g., "Wed, Nov 25")
     var currentTimeText by remember { mutableStateOf(formatClock12HourNow()) }
     var currentMeridiemText by remember { mutableStateOf(formatMeridiemNow()) }
     var currentDateText by remember { mutableStateOf(formatDateNow()) }
@@ -214,7 +301,7 @@ private fun ChargingAodScreen(
         }
     }
 
-    // Ultra-subtle OLED burn-in protection: 1–2px micro-drift every 60s via graphicsLayer (zero layout jumps)
+    // Ultra-subtle OLED burn-in protection: 1–2px micro-drift every 60s via graphicsLayer
     var microDriftStep by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -247,12 +334,16 @@ private fun ChargingAodScreen(
         label = "oled_micro_drift_y",
     )
 
-    var showStyleControls by remember { mutableStateOf(true) }
+    var showStyleControls by remember { mutableStateOf(false) }
     LaunchedEffect(showStyleControls) {
         if (showStyleControls) {
-            delay(5_000L)
+            delay(4_500L)
             showStyleControls = false
         }
+    }
+
+    val livePowerText = remember(state.isCharging, state.wattage) {
+        formatDynamicPowerBadge(state.isCharging, state.wattage)
     }
 
     Box(
@@ -262,28 +353,30 @@ private fun ChargingAodScreen(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = { onExit() },
-                    onTap = { showStyleControls = true },
+                    onTap = { showStyleControls = !showStyleControls },
                 )
             }
             .testTag("charging_aod_root"),
     ) {
-        // Main OLED cluster with ultra-subtle graphicsLayer micro-drift (never triggers relayout)
+        // Spacious AmpereFlow Full-Screen Vertical Composition: Top Anchor | Center Hero | Bottom Anchor
         Column(
             modifier = Modifier
-                .align(Alignment.Center)
+                .fillMaxSize()
                 .graphicsLayer {
                     translationX = smoothDriftX
                     translationY = smoothDriftY
                 }
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 72.dp),
+                .padding(vertical = 48.dp, horizontal = 24.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            // Clock + Date header (12-hour clean format e.g. 11:48)
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // 1. TOP ANCHOR: Large, Bold 12-Hour Clock (64.sp) + Crisp Date Subtitle
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Row(
                     verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -292,256 +385,346 @@ private fun ChargingAodScreen(
                         text = currentTimeText,
                         fontFamily = clockFontFamily,
                         fontWeight = clockFontWeight,
-                        fontSize = 60.sp,
+                        fontSize = 64.sp,
                         letterSpacing = clockLetterSpacing,
                         color = if (designConfig.clockNumberStyle == ClockNumberStyle.OUTLINE_DIGITAL) {
                             accent
                         } else {
-                            Color(0xFFEAF2F8)
+                            Color(0xFFF1F5F9)
                         },
                         maxLines = 1,
                         softWrap = false,
+                        modifier = Modifier.testTag("aod_clock_text"),
                     )
                     Text(
                         text = currentMeridiemText,
-                        style = MonoLabelStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
-                        color = accent.copy(alpha = 0.85f),
+                        style = MonoLabelStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
+                        color = accent.copy(alpha = 0.88f),
                         maxLines = 1,
                         softWrap = false,
-                        modifier = Modifier.padding(bottom = 12.dp),
+                        modifier = Modifier.padding(bottom = 13.dp),
                     )
                 }
                 Text(
-                    text = currentDateText.uppercase(Locale.US),
-                    style = MonoLabelStyle,
-                    color = Color(0xFF7D8C9F),
+                    text = currentDateText,
+                    style = TextStyle(
+                        fontFamily = RobotoCondensedFontFamily,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        letterSpacing = 1.2.sp,
+                    ),
+                    color = Color(0xFF8A99AA),
                     maxLines = 1,
                     softWrap = false,
+                    modifier = Modifier.testTag("aod_date_text"),
                 )
             }
 
-            // Selected AOD Visualization Style
-            when (settings.aodStyle) {
-                AodVisualStyle.SPEEDOMETER_RING -> AodSegmentedRingGauge(
-                    state = state,
-                    accent = accent,
-                )
-                AodVisualStyle.PLASMA_WAVE -> AodEnergyWaveRing(
-                    state = state,
-                    accent = accent,
-                )
-                AodVisualStyle.MINIMAL_DIGITAL -> AodMinimalDigitalCluster(
-                    state = state,
-                    accent = accent,
-                )
-            }
-
-            // Live Wattage & Estimate Pill
-            Surface(
-                shape = CircleShape,
-                color = Color(0xFF0A0F16),
-                border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Bolt,
-                        contentDescription = null,
-                        tint = accent,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Text(
-                        text = String.format(Locale.US, "%.1f W", state.wattage),
-                        style = MonoMetricStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
-                        color = accent,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                    Text(
-                        text = "•",
-                        style = MonoLabelStyle,
-                        color = Color(0xFF475569),
-                    )
-                    Text(
-                        text = state.estimatedTimeLabel,
-                        style = MonoLabelStyle.copy(fontSize = 12.sp),
-                        color = Color(0xFFD6E2EE),
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                }
-            }
-
-            // Compact 3-Card Telemetry Row: Temp, Voltage, Estimate
-            Row(
+            // 2. CENTER HERO: Prominent 240.dp 270-Degree Arc/Ring Gauge + 3-Column Metric Boxes + "More Info"
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(20.dp),
                 modifier = Modifier
-                    .widthIn(max = 380.dp)
+                    .widthIn(max = 400.dp)
                     .fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                AodTelemetryCompactCard(
-                    icon = Icons.Rounded.Thermostat,
-                    label = "TEMP",
-                    value = settings.tempUnit.format(state.temperatureCelsius),
-                    accent = accent,
-                    modifier = Modifier.weight(1f),
-                )
-                AodTelemetryCompactCard(
-                    icon = Icons.Rounded.ElectricBolt,
-                    label = "VOLTAGE",
-                    value = String.format(Locale.US, "%.2f V", state.rawVoltageMv / 1000f),
-                    accent = accent,
-                    modifier = Modifier.weight(1f),
-                )
-                AodTelemetryCompactCard(
-                    icon = Icons.Rounded.Schedule,
-                    label = "ESTIMATE",
-                    value = state.estimatedTimeShort,
-                    accent = accent,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
+                when (settings.aodStyle) {
+                    AodVisualStyle.SPEEDOMETER_RING -> Aod270ArcRingGauge(
+                        state = state,
+                        accent = accent,
+                        gaugeStyle = designConfig.gaugeStyle,
+                        clockNumberStyle = designConfig.clockNumberStyle,
+                    )
+                    AodVisualStyle.PLASMA_WAVE -> AodEnergyWaveRing(
+                        state = state,
+                        accent = accent,
+                    )
+                    AodVisualStyle.MINIMAL_DIGITAL -> AodMinimalDigitalCluster(
+                        state = state,
+                        accent = accent,
+                    )
+                }
 
-        // Fixed Bottom Quick Actions (Flashlight & Camera) + Subtle Style/Accent Chips
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            AnimatedVisibility(
-                visible = showStyleControls,
-                enter = fadeIn(tween(240)),
-                exit = fadeOut(tween(450)),
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Surface(
-                        onClick = {
-                            val styles = AodVisualStyle.entries
-                            val next = styles[(styles.indexOf(settings.aodStyle) + 1) % styles.size]
-                            PowerTelemetryEngine.updateSettings { it.copy(aodStyle = next) }
-                        },
-                        shape = CircleShape,
-                        color = Color(0xFF0E131B),
-                        border = BorderStroke(1.dp, Color(0xFF232E3F)),
-                        modifier = Modifier.testTag("aod_cycle_style_button"),
+                // 3-Column Outlined Metric Boxes: Temp | Voltage | Estimate
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    AodOutlinedMetricBox(
+                        icon = Icons.Rounded.Thermostat,
+                        label = "TEMP",
+                        value = settings.tempUnit.format(state.temperatureCelsius),
+                        accent = accent,
+                        modifier = Modifier.weight(1f),
+                    )
+                    AodOutlinedMetricBox(
+                        icon = Icons.Rounded.ElectricBolt,
+                        label = "VOLTAGE",
+                        value = String.format(Locale.US, "%.2f V", state.rawVoltageMv / 1000f),
+                        accent = accent,
+                        modifier = Modifier.weight(1f),
+                    )
+                    AodOutlinedMetricBox(
+                        icon = Icons.Rounded.Schedule,
+                        label = "ESTIMATE",
+                        value = state.estimatedTimeShort,
+                        accent = accent,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                // Subtle clickable "More Info" link + expandable inline live telemetry drawer
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clickable { showMoreInfo = !showMoreInfo }
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .testTag("aod_more_info_link"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Style,
-                                contentDescription = "Switch AOD style",
-                                tint = accent,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Text(
-                                text = settings.aodStyle.title,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color(0xFFD6E0EC),
-                                maxLines = 1,
-                                softWrap = false,
-                            )
-                        }
+                        Text(
+                            text = if (showMoreInfo) "Hide Info" else "More Info",
+                            style = MonoLabelStyle.copy(
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 0.8.sp,
+                            ),
+                            color = Color(0xFF8C9BAE),
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                        Icon(
+                            imageVector = if (showMoreInfo) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            contentDescription = "Toggle more charging info",
+                            tint = Color(0xFF8C9BAE),
+                            modifier = Modifier.size(16.dp),
+                        )
                     }
 
-                    Surface(
-                        onClick = {
-                            val colors = PowerAccentPreset.entries
-                            val next = colors[(colors.indexOf(settings.aodAccent) + 1) % colors.size]
-                            PowerTelemetryEngine.updateSettings { it.copy(aodAccent = next) }
-                        },
-                        shape = CircleShape,
-                        color = Color(0xFF0E131B),
-                        border = BorderStroke(1.dp, Color(0xFF232E3F)),
-                        modifier = Modifier.testTag("aod_cycle_accent_button"),
+                    AnimatedVisibility(
+                        visible = showMoreInfo,
+                        enter = fadeIn(tween(200)) + expandVertically(),
+                        exit = fadeOut(tween(180)) + shrinkVertically(),
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFF0A0E12),
+                            border = BorderStroke(1.dp, Color(0xFF1D2733)),
+                            modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Palette,
-                                contentDescription = "Switch AOD accent",
-                                tint = accent,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Text(
-                                text = settings.aodAccent.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color(0xFFD6E0EC),
-                                maxLines = 1,
-                                softWrap = false,
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text = "${if (state.currentNowMa >= 0) "+" else ""}${state.currentNowMa} mA • ${state.pluggedLabel} • Peak ${String.format(Locale.US, "%.1fW", state.peakSessionWatts)}",
+                                    style = MonoLabelStyle.copy(fontSize = 11.sp),
+                                    color = Color(0xFFCBD5E1),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                                Surface(
+                                    onClick = onOpenFullDashboard,
+                                    shape = CircleShape,
+                                    color = accent.copy(alpha = 0.16f),
+                                    modifier = Modifier.testTag("aod_open_dashboard_button"),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Text(
+                                            text = "OPEN",
+                                            style = MonoLabelStyle.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                            color = accent,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Rounded.OpenInNew,
+                                            contentDescription = "Open Power Dashboard",
+                                            tint = accent,
+                                            modifier = Modifier.size(12.dp),
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // Bottom Lockscreen-Style Quick Action Row: Flashlight | Exit Hint | Camera
-            Row(
+            // 3. BOTTOM ANCHOR: Optional Tap-Revealed Style Chips + Live Wattage Readout flanked by Flashlight & Camera
+            Column(
                 modifier = Modifier
                     .widthIn(max = 420.dp)
                     .fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Surface(
-                    onClick = { flashlightOn = onToggleFlashlight(!flashlightOn) },
-                    shape = CircleShape,
-                    color = if (flashlightOn) accent.copy(alpha = 0.22f) else Color(0xFF0E131B),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (flashlightOn) accent else Color(0xFF222C3B),
-                    ),
-                    modifier = Modifier
-                        .size(50.dp)
-                        .testTag("aod_flashlight_button"),
+                AnimatedVisibility(
+                    visible = showStyleControls,
+                    enter = fadeIn(tween(220)),
+                    exit = fadeOut(tween(380)),
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = if (flashlightOn) Icons.Rounded.FlashlightOn else Icons.Rounded.FlashlightOff,
-                            contentDescription = "Toggle Flashlight",
-                            tint = if (flashlightOn) accent else Color(0xFFA8B5C6),
-                            modifier = Modifier.size(22.dp),
-                        )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Surface(
+                            onClick = {
+                                val styles = AodVisualStyle.entries
+                                val next = styles[(styles.indexOf(settings.aodStyle) + 1) % styles.size]
+                                PowerTelemetryEngine.updateSettings { it.copy(aodStyle = next) }
+                            },
+                            shape = CircleShape,
+                            color = Color(0xFF0E131B),
+                            border = BorderStroke(1.dp, Color(0xFF232E3F)),
+                            modifier = Modifier.testTag("aod_cycle_style_button"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Style,
+                                    contentDescription = "Switch AOD style",
+                                    tint = accent,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = settings.aodStyle.title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color(0xFFD6E0EC),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+                        }
+
+                        Surface(
+                            onClick = {
+                                val colors = PowerAccentPreset.entries
+                                val next = colors[(colors.indexOf(settings.aodAccent) + 1) % colors.size]
+                                PowerTelemetryEngine.updateSettings { it.copy(aodAccent = next) }
+                            },
+                            shape = CircleShape,
+                            color = Color(0xFF0E131B),
+                            border = BorderStroke(1.dp, Color(0xFF232E3F)),
+                            modifier = Modifier.testTag("aod_cycle_accent_button"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Palette,
+                                    contentDescription = "Switch AOD accent",
+                                    tint = accent,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = settings.aodAccent.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color(0xFFD6E0EC),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+                        }
                     }
                 }
 
-                Text(
-                    text = "DOUBLE-TAP TO EXIT",
-                    style = MonoLabelStyle,
-                    color = Color(0xFF5D6A7B),
-                    maxLines = 1,
-                    softWrap = false,
-                )
-
-                Surface(
-                    onClick = onLaunchCamera,
-                    shape = CircleShape,
-                    color = Color(0xFF0E131B),
-                    border = BorderStroke(1.dp, Color(0xFF222C3B)),
-                    modifier = Modifier
-                        .size(50.dp)
-                        .testTag("aod_camera_button"),
+                // Bottom Bar: Flashlight | Centered Live Wattage Readout & Exit Hint | Camera
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.CameraAlt,
-                            contentDescription = "Open Camera",
-                            tint = Color(0xFFA8B5C6),
-                            modifier = Modifier.size(22.dp),
+                    Surface(
+                        onClick = { flashlightOn = onToggleFlashlight(!flashlightOn) },
+                        shape = CircleShape,
+                        color = if (flashlightOn) accent.copy(alpha = 0.22f) else Color(0xFF0D1116),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (flashlightOn) accent else Color(0xFF222B36),
+                        ),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("aod_flashlight_button"),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (flashlightOn) Icons.Rounded.FlashlightOn else Icons.Rounded.FlashlightOff,
+                                contentDescription = "Toggle Flashlight",
+                                tint = if (flashlightOn) accent else Color(0xFF9AA8B8),
+                                modifier = Modifier.size(21.dp),
+                            )
+                        }
+                    }
+
+                    // Live Wattage Readout centered at the bottom anchor
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Bolt,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = livePowerText,
+                                style = TextStyle(
+                                    fontFamily = MontserratAlternatesFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 22.sp,
+                                    letterSpacing = (-0.5).sp,
+                                ),
+                                color = accent,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.testTag("aod_bottom_wattage_text"),
+                            )
+                        }
+                        Text(
+                            text = "DOUBLE-TAP TO EXIT",
+                            style = MonoLabelStyle.copy(fontSize = 10.sp, letterSpacing = 1.sp),
+                            color = Color(0xFF566373),
+                            maxLines = 1,
+                            softWrap = false,
                         )
+                    }
+
+                    Surface(
+                        onClick = onLaunchCamera,
+                        shape = CircleShape,
+                        color = Color(0xFF0D1116),
+                        border = BorderStroke(1.dp, Color(0xFF222B36)),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("aod_camera_button"),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.CameraAlt,
+                                contentDescription = "Open Camera",
+                                tint = Color(0xFF9AA8B8),
+                                modifier = Modifier.size(21.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -549,10 +732,16 @@ private fun ChargingAodScreen(
     }
 }
 
+/**
+ * Prominent 240.dp 270-Degree AmpereFlow Arc/Ring Gauge for AMOLED Charging AOD,
+ * honoring the user's selected Design Studio [GaugeStyle] and [ClockNumberStyle].
+ */
 @Composable
-private fun AodSegmentedRingGauge(
+private fun Aod270ArcRingGauge(
     state: PowerTelemetryState,
     accent: Color,
+    gaugeStyle: GaugeStyle,
+    clockNumberStyle: ClockNumberStyle,
 ) {
     val animatedProgress by animateFloatAsState(
         targetValue = (state.exactLevelPercent / 100f).coerceIn(0.01f, 1f),
@@ -560,70 +749,156 @@ private fun AodSegmentedRingGauge(
             dampingRatio = Spring.DampingRatioNoBouncy,
             stiffness = Spring.StiffnessLow,
         ),
-        label = "aod_segmented_progress",
+        label = "aod_arc_progress",
     )
 
     val formattedExact = String.format(Locale.US, "%.2f", state.exactLevelPercent)
     val integerPart = formattedExact.substringBefore(".")
     val decimalPart = "." + formattedExact.substringAfter(".")
 
+    val numberFontFamily = when (clockNumberStyle) {
+        ClockNumberStyle.MONTSERRAT_BOLD -> MontserratAlternatesFontFamily
+        ClockNumberStyle.CONDENSED_TECH -> RobotoCondensedFontFamily
+        ClockNumberStyle.OUTLINE_DIGITAL -> MontserratAlternatesFontFamily
+    }
+
     Box(
-        modifier = Modifier.size(236.dp),
+        modifier = Modifier.size(240.dp),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
+            val startAngle = 135f
+            val totalSweep = 270f
+            val activeSweep = totalSweep * animatedProgress
             val center = Offset(size.width / 2f, size.height / 2f)
-            val outerRadius = size.minDimension / 2f - 6.dp.toPx()
-            val innerRadius = outerRadius - 17.dp.toPx()
-            val segmentCount = 60
-            val activeSegments = (animatedProgress * segmentCount).toInt().coerceIn(0, segmentCount)
+            val trackColor = Color(0xFF171E27)
 
-            for (i in 0 until segmentCount) {
-                val angleDeg = -90f + (360f * i / segmentCount)
-                val rad = angleDeg * PI / 180.0
-                val isFilled = i < activeSegments
-                val isLeadingEdge = i == (activeSegments - 1).coerceAtLeast(0) && activeSegments > 0
+            when (gaugeStyle) {
+                GaugeStyle.MINIMAL_THIN_ARC -> {
+                    val strokePx = 9.dp.toPx()
+                    val inset = strokePx + 6.dp.toPx()
+                    val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
+                    val topLeft = Offset(inset, inset)
 
-                val start = Offset(
-                    center.x + (innerRadius * cos(rad)).toFloat(),
-                    center.y + (innerRadius * sin(rad)).toFloat(),
-                )
-                val end = Offset(
-                    center.x + (outerRadius * cos(rad)).toFloat(),
-                    center.y + (outerRadius * sin(rad)).toFloat(),
-                )
+                    drawArc(
+                        color = trackColor,
+                        startAngle = startAngle,
+                        sweepAngle = totalSweep,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                    )
+                    drawArc(
+                        color = accent.copy(alpha = 0.2f),
+                        startAngle = startAngle,
+                        sweepAngle = activeSweep,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokePx * 2.1f, cap = StrokeCap.Round),
+                    )
+                    drawArc(
+                        color = accent,
+                        startAngle = startAngle,
+                        sweepAngle = activeSweep,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                    )
 
-                val segColor = when {
-                    isLeadingEdge -> Color.White
-                    isFilled -> accent.copy(alpha = 0.45f + 0.55f * (i.toFloat() / segmentCount.coerceAtLeast(1)))
-                    else -> Color(0xFF17202D)
+                    val tipRad = (startAngle + activeSweep) * PI / 180.0
+                    val radius = arcSize.width / 2f
+                    drawCircle(
+                        color = Color.White,
+                        radius = strokePx * 0.44f,
+                        center = Offset(
+                            center.x + (radius * cos(tipRad)).toFloat(),
+                            center.y + (radius * sin(tipRad)).toFloat(),
+                        ),
+                    )
                 }
 
-                drawLine(
-                    color = segColor,
-                    start = start,
-                    end = end,
-                    strokeWidth = if (isLeadingEdge) 4.dp.toPx() else 3.2.dp.toPx(),
-                    cap = StrokeCap.Round,
-                )
-            }
+                GaugeStyle.THICK_RING -> {
+                    val strokePx = 18.dp.toPx()
+                    val inset = strokePx / 2f + 6.dp.toPx()
+                    val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
+                    val topLeft = Offset(inset, inset)
 
-            // Inner hairline ring
-            drawCircle(
-                color = Color(0xFF141C27),
-                radius = innerRadius - 8.dp.toPx(),
-                center = center,
-                style = Stroke(width = 1.dp.toPx()),
-            )
+                    drawArc(
+                        color = trackColor,
+                        startAngle = startAngle,
+                        sweepAngle = totalSweep,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                    )
+                    drawArc(
+                        brush = Brush.sweepGradient(
+                            0.0f to accent.copy(alpha = 0.72f),
+                            0.55f to accent,
+                            1.0f to accent.copy(alpha = 0.92f),
+                            center = center,
+                        ),
+                        startAngle = startAngle,
+                        sweepAngle = activeSweep,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                    )
+                }
+
+                GaugeStyle.SEGMENTED_TICK -> {
+                    val tickCount = 46
+                    val activeTicks = (animatedProgress * tickCount).roundToInt().coerceIn(0, tickCount)
+                    val outerRadius = size.minDimension / 2f - 4.dp.toPx()
+                    val innerRadius = outerRadius - 15.dp.toPx()
+
+                    for (i in 0 until tickCount) {
+                        val fraction = i.toFloat() / (tickCount - 1).coerceAtLeast(1)
+                        val angleDeg = startAngle + (totalSweep * fraction)
+                        val rad = angleDeg * PI / 180.0
+                        val isFilled = i < activeTicks
+                        val isLead = i == activeTicks - 1 && activeTicks > 0
+
+                        val start = Offset(
+                            center.x + (innerRadius * cos(rad)).toFloat(),
+                            center.y + (innerRadius * sin(rad)).toFloat(),
+                        )
+                        val end = Offset(
+                            center.x + (outerRadius * cos(rad)).toFloat(),
+                            center.y + (outerRadius * sin(rad)).toFloat(),
+                        )
+
+                        drawLine(
+                            color = when {
+                                isLead -> Color.White
+                                isFilled -> accent.copy(alpha = 0.5f + 0.5f * fraction)
+                                else -> trackColor
+                            },
+                            start = start,
+                            end = end,
+                            strokeWidth = if (isLead) 4.dp.toPx() else 3.dp.toPx(),
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                }
+            }
         }
 
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = integerPart,
-                    fontFamily = SpaceGroteskFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 48.sp,
+                    fontFamily = numberFontFamily,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 54.sp,
                     letterSpacing = (-1.5).sp,
                     color = Color.White,
                     maxLines = 1,
@@ -631,20 +906,27 @@ private fun AodSegmentedRingGauge(
                 )
                 Text(
                     text = "$decimalPart%",
-                    style = MonoMetricStyle.copy(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
+                    style = MonoMetricStyle.copy(fontSize = 19.sp, fontWeight = FontWeight.SemiBold),
                     color = accent,
                     maxLines = 1,
                     softWrap = false,
-                    modifier = Modifier.padding(bottom = 8.dp),
+                    modifier = Modifier.padding(bottom = 9.dp),
                 )
             }
-            Text(
-                text = "${state.statusLabel.uppercase(Locale.US)} • ${state.pluggedLabel.uppercase(Locale.US)}",
-                style = MonoLabelStyle,
-                color = Color(0xFF7D8C9F),
-                maxLines = 1,
-                softWrap = false,
-            )
+            Surface(
+                shape = CircleShape,
+                color = accent.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+            ) {
+                Text(
+                    text = if (state.isCharging) "CHARGING" else "DISCHARGING",
+                    style = MonoLabelStyle.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                    color = accent,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 3.dp),
+                )
+            }
         }
     }
 }
@@ -666,7 +948,7 @@ private fun AodEnergyWaveRing(
     )
 
     Box(
-        modifier = Modifier.size(230.dp),
+        modifier = Modifier.size(240.dp),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -733,7 +1015,7 @@ private fun AodEnergyWaveRing(
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = String.format(Locale.US, "%.2f%%", state.exactLevelPercent),
-                fontFamily = SpaceGroteskFontFamily,
+                fontFamily = MontserratAlternatesFontFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = 40.sp,
                 color = Color.White,
@@ -741,9 +1023,9 @@ private fun AodEnergyWaveRing(
                 softWrap = false,
             )
             Text(
-                text = state.pluggedLabel.uppercase(Locale.US),
+                text = if (state.isCharging) "CHARGING" else "DISCHARGING",
                 style = MonoLabelStyle,
-                color = Color(0xFF9FB0C4),
+                color = accent,
                 maxLines = 1,
                 softWrap = false,
             )
@@ -757,24 +1039,27 @@ private fun AodMinimalDigitalCluster(
     accent: Color,
 ) {
     Column(
-        modifier = Modifier.padding(vertical = 26.dp),
+        modifier = Modifier
+            .height(240.dp)
+            .fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.Center,
     ) {
         Text(
             text = String.format(Locale.US, "%.2f%%", state.exactLevelPercent),
-            fontFamily = SpaceGroteskFontFamily,
-            fontWeight = FontWeight.Bold,
+            fontFamily = MontserratAlternatesFontFamily,
+            fontWeight = FontWeight.ExtraBold,
             fontSize = 58.sp,
             letterSpacing = (-2).sp,
             color = accent,
             maxLines = 1,
             softWrap = false,
         )
+        Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = "${state.statusLabel.uppercase(Locale.US)} • ${state.pluggedLabel.uppercase(Locale.US)}",
             style = MonoLabelStyle,
-            color = Color(0xFF6E7B8C),
+            color = Color(0xFF7D8B9B),
             maxLines = 1,
             softWrap = false,
         )
@@ -782,7 +1067,7 @@ private fun AodMinimalDigitalCluster(
 }
 
 @Composable
-private fun AodTelemetryCompactCard(
+private fun AodOutlinedMetricBox(
     icon: ImageVector,
     label: String,
     value: String,
@@ -792,15 +1077,15 @@ private fun AodTelemetryCompactCard(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(18.dp),
-        color = Color(0xFF0A0E14),
-        border = BorderStroke(1.dp, Color(0xFF1A2230)),
+        color = Color(0xFF070A0E),
+        border = BorderStroke(1.dp, Color(0xFF1F2A37)),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 11.dp),
+                .padding(horizontal = 10.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -815,15 +1100,19 @@ private fun AodTelemetryCompactCard(
                 Text(
                     text = label,
                     style = MonoLabelStyle.copy(fontSize = 10.sp),
-                    color = Color(0xFF7B899C),
+                    color = Color(0xFF7F8E9F),
                     maxLines = 1,
                     softWrap = false,
                 )
             }
             Text(
                 text = value,
-                style = MonoMetricStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.Bold),
-                color = Color(0xFFE6EEF7),
+                style = TextStyle(
+                    fontFamily = MontserratAlternatesFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                ),
+                color = Color(0xFFEAF2FA),
                 maxLines = 1,
                 softWrap = false,
             )
