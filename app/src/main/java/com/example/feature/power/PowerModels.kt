@@ -52,7 +52,7 @@ enum class AodVisualStyle(val key: String, val title: String, val subtitle: Stri
 @Immutable
 data class PowerSettings(
     val tempUnit: TempUnit = TempUnit.CELSIUS,
-    val dualCellMode: Boolean = true,
+    val dualCellMode: Boolean = false,
     val dualCellUserOverridden: Boolean = false,
     val designCapacityMah: Int = 5000,
     val hudEnabled: Boolean = false,

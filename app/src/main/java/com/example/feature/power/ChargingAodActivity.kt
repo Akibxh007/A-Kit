@@ -5,11 +5,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.drawable.ColorDrawable
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.text.format.DateFormat
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -86,6 +88,7 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -105,7 +108,9 @@ import com.example.ui.theme.MonoLabelStyle
 import com.example.ui.theme.MonoMetricStyle
 import com.example.ui.theme.MontserratAlternatesFontFamily
 import com.example.ui.theme.RobotoCondensedFontFamily
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -143,6 +148,9 @@ class ChargingAodActivity : ComponentActivity() {
             )
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // True AMOLED pitch-black window background (zero dark-grey bleed)
+        window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.BLACK))
+        window.decorView.setBackgroundColor(android.graphics.Color.BLACK)
 
         enableEdgeToEdge()
         hideSystemBars()
@@ -285,18 +293,20 @@ private fun ChargingAodScreen(
         ClockNumberStyle.OUTLINE_DIGITAL -> 3.sp
     }
 
+    val context = LocalContext.current
     var flashlightOn by remember { mutableStateOf(false) }
     var showMoreInfo by remember { mutableStateOf(false) }
 
-    // Live digital 12-hour clock + crisp date subtitle (e.g., "Wed, Nov 25")
-    var currentTimeText by remember { mutableStateOf(formatClock12HourNow()) }
-    var currentMeridiemText by remember { mutableStateOf(formatMeridiemNow()) }
+    // Dedicated 1-second live telemetry + digital clock ticker so decimal % and wattage never freeze
+    var currentTimeText by remember { mutableStateOf(formatCleanClockNow(context)) }
     var currentDateText by remember { mutableStateOf(formatDateNow()) }
     LaunchedEffect(Unit) {
         while (true) {
-            currentTimeText = formatClock12HourNow()
-            currentMeridiemText = formatMeridiemNow()
+            currentTimeText = formatCleanClockNow(context)
             currentDateText = formatDateNow()
+            withContext(Dispatchers.Default) {
+                PowerTelemetryEngine.pollFreshHardwareSample(recordSample = true)
+            }
             delay(1_000L)
         }
     }
@@ -343,7 +353,8 @@ private fun ChargingAodScreen(
     }
 
     val livePowerText = remember(state.isCharging, state.wattage) {
-        formatDynamicPowerBadge(state.isCharging, state.wattage)
+        val formatted = String.format(Locale.US, "%.2f W", state.wattage)
+        if (state.isCharging) formatted else "-$formatted"
     }
 
     Box(
@@ -358,7 +369,7 @@ private fun ChargingAodScreen(
             }
             .testTag("charging_aod_root"),
     ) {
-        // Spacious AmpereFlow Full-Screen Vertical Composition: Top Anchor | Center Hero | Bottom Anchor
+        // Spacious AmpereFlow Full-Screen Vertical Composition: Top Anchor (80.dp) | Center Hero | Bottom Anchor
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -368,43 +379,31 @@ private fun ChargingAodScreen(
                 }
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(vertical = 48.dp, horizontal = 24.dp),
+                .padding(top = 80.dp, bottom = 32.dp, start = 24.dp, end = 24.dp),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // 1. TOP ANCHOR: Large, Bold 12-Hour Clock (64.sp) + Crisp Date Subtitle
+            // 1. TOP ANCHOR: Bold 78.sp Clean Clock (No cramped AM/PM) + Date Subtitle
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = currentTimeText,
-                        fontFamily = clockFontFamily,
-                        fontWeight = clockFontWeight,
-                        fontSize = 64.sp,
-                        letterSpacing = clockLetterSpacing,
-                        color = if (designConfig.clockNumberStyle == ClockNumberStyle.OUTLINE_DIGITAL) {
-                            accent
-                        } else {
-                            Color(0xFFF1F5F9)
-                        },
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.testTag("aod_clock_text"),
-                    )
-                    Text(
-                        text = currentMeridiemText,
-                        style = MonoLabelStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
-                        color = accent.copy(alpha = 0.88f),
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.padding(bottom = 13.dp),
-                    )
-                }
+                Text(
+                    text = currentTimeText,
+                    fontFamily = clockFontFamily,
+                    fontWeight = clockFontWeight,
+                    fontSize = 78.sp,
+                    lineHeight = 82.sp,
+                    letterSpacing = clockLetterSpacing,
+                    color = if (designConfig.clockNumberStyle == ClockNumberStyle.OUTLINE_DIGITAL) {
+                        accent
+                    } else {
+                        Color(0xFFF5F8FC)
+                    },
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.testTag("aod_clock_text"),
+                )
                 Text(
                     text = currentDateText,
                     style = TextStyle(
@@ -512,7 +511,7 @@ private fun ChargingAodScreen(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(16.dp),
-                            color = Color(0xFF0A0E12),
+                            color = Color.Black,
                             border = BorderStroke(1.dp, Color(0xFF1D2733)),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
@@ -583,7 +582,7 @@ private fun ChargingAodScreen(
                                 PowerTelemetryEngine.updateSettings { it.copy(aodStyle = next) }
                             },
                             shape = CircleShape,
-                            color = Color(0xFF0E131B),
+                            color = Color.Black,
                             border = BorderStroke(1.dp, Color(0xFF232E3F)),
                             modifier = Modifier.testTag("aod_cycle_style_button"),
                         ) {
@@ -615,7 +614,7 @@ private fun ChargingAodScreen(
                                 PowerTelemetryEngine.updateSettings { it.copy(aodAccent = next) }
                             },
                             shape = CircleShape,
-                            color = Color(0xFF0E131B),
+                            color = Color.Black,
                             border = BorderStroke(1.dp, Color(0xFF232E3F)),
                             modifier = Modifier.testTag("aod_cycle_accent_button"),
                         ) {
@@ -642,7 +641,7 @@ private fun ChargingAodScreen(
                     }
                 }
 
-                // Bottom Bar: Flashlight | Centered Live Wattage Readout & Exit Hint | Camera
+                // Bottom Bar: 44.dp Circular Flashlight | Centered Live Wattage Readout | 44.dp Circular Camera
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -651,13 +650,13 @@ private fun ChargingAodScreen(
                     Surface(
                         onClick = { flashlightOn = onToggleFlashlight(!flashlightOn) },
                         shape = CircleShape,
-                        color = if (flashlightOn) accent.copy(alpha = 0.22f) else Color(0xFF0D1116),
+                        color = if (flashlightOn) accent.copy(alpha = 0.22f) else Color.Black,
                         border = BorderStroke(
                             width = 1.dp,
                             color = if (flashlightOn) accent else Color(0xFF222B36),
                         ),
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(44.dp)
                             .testTag("aod_flashlight_button"),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -665,12 +664,12 @@ private fun ChargingAodScreen(
                                 imageVector = if (flashlightOn) Icons.Rounded.FlashlightOn else Icons.Rounded.FlashlightOff,
                                 contentDescription = "Toggle Flashlight",
                                 tint = if (flashlightOn) accent else Color(0xFF9AA8B8),
-                                modifier = Modifier.size(21.dp),
+                                modifier = Modifier.size(20.dp),
                             )
                         }
                     }
 
-                    // Live Wattage Readout centered at the bottom anchor
+                    // Live Wattage Readout (e.g. 8.44 W) centered at the bottom anchor
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -711,10 +710,10 @@ private fun ChargingAodScreen(
                     Surface(
                         onClick = onLaunchCamera,
                         shape = CircleShape,
-                        color = Color(0xFF0D1116),
+                        color = Color.Black,
                         border = BorderStroke(1.dp, Color(0xFF222B36)),
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(44.dp)
                             .testTag("aod_camera_button"),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -722,7 +721,7 @@ private fun ChargingAodScreen(
                                 imageVector = Icons.Rounded.CameraAlt,
                                 contentDescription = "Open Camera",
                                 tint = Color(0xFF9AA8B8),
-                                modifier = Modifier.size(21.dp),
+                                modifier = Modifier.size(20.dp),
                             )
                         }
                     }
@@ -1077,7 +1076,7 @@ private fun AodOutlinedMetricBox(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(18.dp),
-        color = Color(0xFF070A0E),
+        color = Color.Black,
         border = BorderStroke(1.dp, Color(0xFF1F2A37)),
     ) {
         Column(
@@ -1120,11 +1119,10 @@ private fun AodOutlinedMetricBox(
     }
 }
 
-private fun formatClock12HourNow(): String =
-    SimpleDateFormat("h:mm", Locale.getDefault()).format(Date())
-
-private fun formatMeridiemNow(): String =
-    SimpleDateFormat("a", Locale.US).format(Date()).uppercase(Locale.US)
+private fun formatCleanClockNow(context: Context): String {
+    val pattern = if (DateFormat.is24HourFormat(context)) "H:mm" else "h:mm"
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date())
+}
 
 private fun formatDateNow(): String =
     SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date())

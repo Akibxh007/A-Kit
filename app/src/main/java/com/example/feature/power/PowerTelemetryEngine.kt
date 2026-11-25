@@ -46,6 +46,7 @@ data class DesignConfigSnapshot(
 object PowerTelemetryEngine {
 
     private const val POLLING_INTERVAL_MS = 1_500L
+    private const val AOD_POLLING_INTERVAL_MS = 1_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -227,14 +228,9 @@ object PowerTelemetryEngine {
             if (pollingJob?.isActive == true) return
             pollingJob = scope.launch {
                 while (isActive) {
-                    delay(POLLING_INTERVAL_MS)
-                    val ctx = appContext ?: continue
-                    val currentIntent = lastIntent
-                        ?: ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                    if (currentIntent != null) {
-                        lastIntent = currentIntent
-                        processReading(currentIntent, recordSample = true)
-                    }
+                    val intervalMs = if (isAodVisible) AOD_POLLING_INTERVAL_MS else POLLING_INTERVAL_MS
+                    delay(intervalMs)
+                    pollFreshHardwareSample(recordSample = true)
                 }
             }
         } else {
@@ -243,15 +239,23 @@ object PowerTelemetryEngine {
         }
     }
 
-    private fun pollOnceImmediately() {
+    /**
+     * Immediately reads a fresh hardware battery sticky intent and live [BatteryManager]
+     * properties (current, voltage, temperature, charge counter) so Charging AOD and Power
+     * screens never display frozen or stale cached telemetry.
+     */
+    fun pollFreshHardwareSample(recordSample: Boolean = true) {
         val ctx = appContext ?: return
+        val freshIntent = runCatching {
+            ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        }.getOrNull() ?: lastIntent ?: return
+        lastIntent = freshIntent
+        processReading(freshIntent, recordSample = recordSample)
+    }
+
+    private fun pollOnceImmediately() {
         scope.launch {
-            val currentIntent = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                ?: lastIntent
-            if (currentIntent != null) {
-                lastIntent = currentIntent
-                processReading(currentIntent, recordSample = false)
-            }
+            pollFreshHardwareSample(recordSample = false)
         }
     }
 
@@ -419,29 +423,24 @@ object PowerTelemetryEngine {
             null
         }
 
-        // Dual-Cell / Charge-Pump calibration (ON by default on fresh install):
-        // Detects dual-cell / 2:1 charge-pump signatures when kernel reports single-cell voltage (~3.0-5.4V).
+        // 1S vs 2S Dual-Cell calibration:
+        // Never auto-multiply wattage on standard 1S single-cell phones (e.g. 6W–18W chargers).
+        // Apply the 2x charge-pump / dual-cell multiplier ONLY when the user explicitly turns ON Dual-Cell (2S) mode.
         val kernelReportsSingleCellVoltage = normalizedVoltageMv in 3000..5400
         val rawSingleCellWatts = (normalizedVoltageMv / 1000f) * (absMaFloat / 1000f)
         val halfCapacitySignature = rawEstimatedFullMah != null &&
             rawEstimatedFullMah < (designMah * 0.62f).roundToInt()
         val fastChargePumpSignature = isCharging &&
             plugged == BatteryManager.BATTERY_PLUGGED_AC &&
-            (rawSingleCellWatts > 15f || (rawSingleCellWatts * 2f > 15f && absMaFloat >= 1750f))
+            rawSingleCellWatts > 22f
 
         val autoDualCellDetected = kernelReportsSingleCellVoltage &&
             (halfCapacitySignature || fastChargePumpSignature)
 
-        val userOrAutoDualCell = if (currentSettings.dualCellUserOverridden) {
-            currentSettings.dualCellMode
-        } else {
-            currentSettings.dualCellMode || autoDualCellDetected
-        }
-
-        val effectiveDualCell = userOrAutoDualCell && kernelReportsSingleCellVoltage
+        val effectiveDualCell = currentSettings.dualCellMode && kernelReportsSingleCellVoltage
 
         // Keep displayed voltage strictly as actual single-cell battery voltage (e.g. 3.98 V).
-        // Apply the 2x charge-pump / dual-cell multiplier ONLY to charging current & wattage.
+        // Apply the 2x multiplier ONLY to charging current & wattage when Dual-Cell (2S) is enabled.
         val effectiveVoltageMv = normalizedVoltageMv
         val chargeCurrentMultiplier = if (effectiveDualCell && isCharging) 2f else 1f
         val calibratedAbsMaFloat = absMaFloat * chargeCurrentMultiplier

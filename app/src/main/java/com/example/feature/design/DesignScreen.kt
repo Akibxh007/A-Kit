@@ -1,5 +1,11 @@
 package com.example.feature.design
 
+import android.app.NotificationManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -29,14 +35,25 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,12 +63,17 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AccentSwatch
 import com.example.data.AppPreferences
@@ -288,6 +310,16 @@ fun DesignScreen(
                     )
                 }
             }
+        }
+
+        // 2b. 1-Tap Lockscreen & HyperOS Background Pop-up Permission Helper
+        item(key = "design_lockscreen_permission_helper") {
+            LockscreenLaunchPermissionsCard(
+                accentColor = previewAccent,
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth(),
+            )
         }
 
         // 3. Accent Color Swatches Row
@@ -779,4 +811,317 @@ private fun swatchDisplayColor(swatch: AccentSwatch): Color = when (swatch) {
     AccentSwatch.CYBER_PEACH -> CyberPeachPrimary
     AccentSwatch.ELECTRIC_BLUE -> ElectricBluePrimary
     AccentSwatch.MONOCHROME -> MonochromePrimary
+}
+
+@Composable
+private fun LockscreenLaunchPermissionsCard(
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var refreshTick by remember { mutableIntStateOf(0) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshTick += 1
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val overlayGranted = remember(context, refreshTick) {
+        Settings.canDrawOverlays(context)
+    }
+    val fullScreenIntentGranted = remember(context, refreshTick) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.canUseFullScreenIntent() == true
+        } else {
+            true
+        }
+    }
+    val isXiaomiDevice = remember {
+        val brand = Build.BRAND.lowercase(Locale.US)
+        val manufacturer = Build.MANUFACTURER.lowercase(Locale.US)
+        brand.contains("xiaomi") || brand.contains("redmi") || brand.contains("poco") ||
+            manufacturer.contains("xiaomi")
+    }
+
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (!overlayGranted || !fullScreenIntentGranted) {
+                accentColor.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
+        ),
+        modifier = modifier.testTag("design_lockscreen_permissions_card"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Security,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = "Lockscreen Wake & Pop-up Permissions",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = if (overlayGranted && fullScreenIntentGranted) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        accentColor.copy(alpha = 0.16f)
+                    },
+                ) {
+                    Text(
+                        text = if (overlayGranted && fullScreenIntentGranted) "READY" else "SETUP",
+                        style = MonoLabelStyle.copy(fontSize = 10.sp),
+                        color = if (overlayGranted && fullScreenIntentGranted) {
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        } else {
+                            accentColor
+                        },
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            LockscreenPermissionActionRow(
+                icon = Icons.Rounded.Layers,
+                title = "Display Over Other Apps",
+                subtitle = "Required for Floating HUD & instant plug-in launch",
+                statusLabel = if (overlayGranted) "GRANTED" else "GRANT",
+                isGranted = overlayGranted,
+                onClick = { openOverlayPermissionPage(context) },
+                testTag = "design_perm_overlay",
+            )
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                )
+                LockscreenPermissionActionRow(
+                    icon = Icons.Rounded.NotificationsActive,
+                    title = "Full-Screen Lockscreen Alerts",
+                    subtitle = "Android 14+ wake over lockscreen when screen is off",
+                    statusLabel = if (fullScreenIntentGranted) "GRANTED" else "ALLOW",
+                    isGranted = fullScreenIntentGranted,
+                    onClick = { openFullScreenIntentPermissionPage(context) },
+                    testTag = "design_perm_fullscreen_intent",
+                )
+            }
+
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+            )
+            LockscreenPermissionActionRow(
+                icon = Icons.Rounded.OpenInNew,
+                title = if (isXiaomiDevice) "HyperOS Background Pop-up Windows" else "OEM Background Pop-up / Lockscreen",
+                subtitle = "Enable \"Display pop-up windows in background\" & \"Show on Lock screen\"",
+                statusLabel = "OPEN",
+                isGranted = false,
+                isNeutralAction = true,
+                onClick = { openHyperOsBackgroundPopupSettings(context) },
+                testTag = "design_perm_hyperos_popup",
+            )
+        }
+    }
+}
+
+@Composable
+private fun LockscreenPermissionActionRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    statusLabel: String,
+    isGranted: Boolean,
+    isNeutralAction: Boolean = false,
+    onClick: () -> Unit,
+    testTag: String,
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 10.dp),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (isGranted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(19.dp),
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = when {
+                        isGranted -> MaterialTheme.colorScheme.secondaryContainer
+                        isNeutralAction -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        else -> MaterialTheme.colorScheme.tertiaryContainer
+                    },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (isGranted) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(12.dp),
+                            )
+                        }
+                        Text(
+                            text = statusLabel,
+                            style = MonoLabelStyle.copy(fontSize = 10.sp),
+                            color = when {
+                                isGranted -> MaterialTheme.colorScheme.onSecondaryContainer
+                                isNeutralAction -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onTertiaryContainer
+                            },
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
+
+private fun openOverlayPermissionPage(context: Context) {
+    val intent = Intent(
+        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+        Uri.parse("package:${context.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+}
+
+private fun openFullScreenIntentPermissionPage(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+            Uri.parse("package:${context.packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }
+            .onFailure { openOverlayPermissionPage(context) }
+    } else {
+        openOverlayPermissionPage(context)
+    }
+}
+
+private fun openHyperOsBackgroundPopupSettings(context: Context) {
+    val miuiIntent = Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+        putExtra("extra_pkgname", context.packageName)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    val miuiSpecific = Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+        setClassName(
+            "com.miui.securitycenter",
+            "com.miui.permcenter.permissions.PermissionsEditorActivity",
+        )
+        putExtra("extra_pkgname", context.packageName)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { context.startActivity(miuiSpecific) }
+        .onFailure {
+            runCatching { context.startActivity(miuiIntent) }
+                .onFailure {
+                    runCatching {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:${context.packageName}"),
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
+        }
 }

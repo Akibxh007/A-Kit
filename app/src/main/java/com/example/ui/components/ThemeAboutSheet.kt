@@ -51,9 +51,11 @@ import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SettingsBrightness
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -92,6 +94,8 @@ import com.example.BuildConfig
 import com.example.R
 import com.example.data.AppPreferences
 import com.example.data.ThemeMode
+import com.example.feature.update.AppUpdateState
+import com.example.feature.update.UpdateCheckStatus
 import com.example.ui.navigation.AKitDestination
 import com.example.ui.theme.AmoledBrandBlack
 import com.example.ui.theme.MonoLabelStyle
@@ -139,10 +143,13 @@ private fun readPermissionStatus(context: Context): InteractivePermissionStatus 
 @Composable
 fun SettingsModalSheet(
     preferences: AppPreferences,
+    updateState: AppUpdateState,
     onSelectThemeMode: (ThemeMode) -> Unit,
     onToggleDynamicColor: (Boolean) -> Unit,
     onToggleAutoLaunchAod: (Boolean) -> Unit,
     onSelectStartupTab: (String) -> Unit,
+    onCheckForUpdates: () -> Unit,
+    onOpenUpdateSheet: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -700,6 +707,118 @@ fun SettingsModalSheet(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.secondary,
                             )
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+
+                    // Manual "Check for Updates" Trigger (GitHub Releases Direct APK Updater)
+                    val isChecking = updateState.status == UpdateCheckStatus.CHECKING
+                    val hasUpdate = updateState.release != null &&
+                        (updateState.status == UpdateCheckStatus.UPDATE_AVAILABLE ||
+                            updateState.status == UpdateCheckStatus.READY_TO_INSTALL ||
+                            updateState.status == UpdateCheckStatus.DOWNLOADING)
+
+                    Surface(
+                        onClick = {
+                            if (hasUpdate) {
+                                onOpenUpdateSheet()
+                            } else if (!isChecking) {
+                                onCheckForUpdates()
+                            }
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (hasUpdate) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (hasUpdate) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant
+                            },
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_check_updates_button"),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                            ) {
+                                if (isChecking) {
+                                    CircularProgressIndicator(
+                                        strokeWidth = 2.dp,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Rounded.SystemUpdate,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = if (hasUpdate) {
+                                            "Update Ready (${updateState.release?.tagName})"
+                                        } else {
+                                            "Check for Updates"
+                                        },
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = updateState.statusMessage
+                                            ?: "GitHub Releases • Direct APK installer",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = if (hasUpdate) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                },
+                            ) {
+                                Text(
+                                    text = when {
+                                        isChecking -> "CHECKING"
+                                        hasUpdate -> "INSTALL"
+                                        else -> "CHECK"
+                                    },
+                                    style = MonoLabelStyle,
+                                    color = if (hasUpdate) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                )
+                            }
                         }
                     }
                 }

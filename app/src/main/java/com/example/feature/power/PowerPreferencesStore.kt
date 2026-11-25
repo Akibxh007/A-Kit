@@ -48,7 +48,11 @@ class PowerPreferencesStore(private val context: Context) {
         .map { p ->
             PowerSettings(
                 tempUnit = TempUnit.fromKey(p[Keys.TEMP_UNIT]),
-                dualCellMode = p[Keys.DUAL_CELL] ?: true,
+                dualCellMode = if (p[Keys.DUAL_CELL_USER_OVERRIDDEN] == true) {
+                    p[Keys.DUAL_CELL] ?: false
+                } else {
+                    false
+                },
                 dualCellUserOverridden = p[Keys.DUAL_CELL_USER_OVERRIDDEN] ?: false,
                 designCapacityMah = p[Keys.DESIGN_CAPACITY_MAH] ?: detectHardwareDesignCapacity(context),
                 hudEnabled = p[Keys.HUD_ENABLED] ?: false,
@@ -81,7 +85,11 @@ class PowerPreferencesStore(private val context: Context) {
         context.powerSuiteDataStore.edit { p ->
             val current = PowerSettings(
                 tempUnit = TempUnit.fromKey(p[Keys.TEMP_UNIT]),
-                dualCellMode = p[Keys.DUAL_CELL] ?: true,
+                dualCellMode = if (p[Keys.DUAL_CELL_USER_OVERRIDDEN] == true) {
+                    p[Keys.DUAL_CELL] ?: false
+                } else {
+                    false
+                },
                 dualCellUserOverridden = p[Keys.DUAL_CELL_USER_OVERRIDDEN] ?: false,
                 designCapacityMah = p[Keys.DESIGN_CAPACITY_MAH] ?: detectHardwareDesignCapacity(context),
                 hudEnabled = p[Keys.HUD_ENABLED] ?: false,

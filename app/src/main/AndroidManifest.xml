@@ -21,8 +21,9 @@
         android:name="android.permission.MANAGE_MEDIA"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Drop Local P2P Wi-Fi Share (100% Local LAN / Hotspot ServerSocket, WifiNetworkSpecifier & QR Scanner) -->
+    <!-- Drop Local P2P Wi-Fi Share & Direct In-App GitHub Release Updater -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

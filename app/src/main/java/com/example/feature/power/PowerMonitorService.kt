@@ -604,66 +604,70 @@ class PowerMonitorService : Service() {
         }
 
         /**
-         * Launches [ChargingAodActivity] with zero delay on charger plug-in—both via direct
-         * `startActivity` (when overlay permission or foreground exemption is available) and via
-         * a silent high-priority `FullScreenIntent` notification when the device is locked so
-         * Android 10–15 background activity launch rules never block lockscreen wake-up.
+         * Launches [ChargingAodActivity] with zero delay on charger plug-in—compatible with
+         * HyperOS / MIUI and Android 14+ background activity launch restrictions:
+         * 1. Acquires a short [PowerManager.SCREEN_BRIGHT_WAKE_LOCK] + [PowerManager.ACQUIRE_CAUSES_WAKEUP]
+         *    to wake the screen immediately when power connects while the display is off.
+         * 2. Posts a high-priority `FullScreenIntent` notification (using `USE_FULL_SCREEN_INTENT`)
+         *    so the OS reliably brings [ChargingAodActivity] directly above the lockscreen.
+         * 3. Also fires direct `startActivity()` when overlay or background pop-up permission is granted.
          */
+        @SuppressLint("WakelockTimeout")
         fun launchChargingAodImmediately(context: Context) {
             val app = context.applicationContext
             ensureChannelsStatic(app)
+            PowerTelemetryEngine.pollFreshHardwareSample(recordSample = true)
 
             val aodIntent = Intent(app, ChargingAodActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
                         Intent.FLAG_ACTIVITY_NO_ANIMATION,
                 )
                 putExtra(ChargingAodActivity.EXTRA_LAUNCHED_FROM_PLUGIN, true)
             }
 
-            // Wake screen briefly if screen is currently off
+            // 1. Always wake the display immediately when power connects while locked or screen is off
             runCatching {
                 val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
-                if (pm != null && !pm.isInteractive) {
+                if (pm != null) {
                     @Suppress("DEPRECATION")
                     val wl = pm.newWakeLock(
                         PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                         "AKit:ChargingAodWake",
                     )
-                    wl.acquire(3_000L)
+                    wl.setReferenceCounted(false)
+                    wl.acquire(4_500L)
                 }
             }
 
-            // 1. Direct zero-delay launch
-            runCatching { app.startActivity(aodIntent) }
+            // 2. Always fire high-priority FullScreenIntent notification (Android 10–15 & HyperOS lockscreen wake)
+            val fullScreenPi = PendingIntent.getActivity(
+                app,
+                AOD_LAUNCH_NOTIFICATION_ID,
+                aodIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notification = NotificationCompat.Builder(app, CHANNEL_AOD_LAUNCH_ID)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+                .setContentTitle("Charging AOD Active")
+                .setContentText("Tap to open live AMOLED charging screen")
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setAutoCancel(true)
+                .setOngoing(false)
+                .setTimeoutAfter(6_000L)
+                .setContentIntent(fullScreenPi)
+                .setFullScreenIntent(fullScreenPi, true)
+                .build()
+            val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            runCatching { nm?.notify(AOD_LAUNCH_NOTIFICATION_ID, notification) }
 
-            // 2. Lockscreen / background full-screen intent trigger (guarantees Android 10-15 wake over lockscreen)
-            val km = app.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-            val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
-            val isLockedOrScreenOff = km?.isKeyguardLocked == true || pm?.isInteractive == false
-            if (isLockedOrScreenOff) {
-                val fullScreenPi = PendingIntent.getActivity(
-                    app,
-                    AOD_LAUNCH_NOTIFICATION_ID,
-                    aodIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                )
-                val notification = NotificationCompat.Builder(app, CHANNEL_AOD_LAUNCH_ID)
-                    .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
-                    .setContentTitle("Charging AOD Ready")
-                    .setContentText("Tap to open live AMOLED charging display")
-                    .setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setCategory(NotificationCompat.CATEGORY_ALARM)
-                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                    .setAutoCancel(true)
-                    .setTimeoutAfter(5_000L)
-                    .setFullScreenIntent(fullScreenPi, true)
-                    .build()
-                val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                runCatching { nm?.notify(AOD_LAUNCH_NOTIFICATION_ID, notification) }
-            }
+            // 3. Direct zero-delay launch (succeeds immediately when overlay / HyperOS pop-up permission is granted)
+            runCatching { app.startActivity(aodIntent) }
         }
 
         fun dismissChargingAodImmediately(context: Context) {

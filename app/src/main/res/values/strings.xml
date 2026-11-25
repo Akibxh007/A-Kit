@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">A-Kit</string>
     <string name="app_tagline">Offline Native Utility Suite</string>
-    <string name="badge_offline_only">100% OFFLINE</string>
+    <string name="badge_offline_only">OFFLINE-FIRST • ZERO TRACKERS</string>
 
     <!-- Navigation Tabs -->
     <string name="nav_power">Power</string>
@@ -23,7 +23,7 @@
     <string name="sheet_dynamic_color_unavailable">Requires Android 12 or newer</string>
     <string name="sheet_about_title">About A-Kit</string>
     <string name="sheet_about_description">Open-source, ad-free Android utility suite engineered for zero cloud dependencies, zero telemetry, and pure local hardware control.</string>
-    <string name="sheet_privacy_guarantee">Zero Internet Permission • Zero Trackers • Zero Ads</string>
+    <string name="sheet_privacy_guarantee">Offline-First • Zero Trackers • Zero Ads</string>
     <string name="sheet_permissions_title">Manifest Permission Matrix</string>
     <string name="action_close">Done</string>
 

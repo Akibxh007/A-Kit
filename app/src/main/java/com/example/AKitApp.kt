@@ -51,16 +51,25 @@ import com.example.feature.power.PowerTelemetryEngine
 import com.example.feature.power.PowerViewModel
 import com.example.feature.snapclean.SnapCleanScreen
 import com.example.feature.snapclean.SnapCleanViewModel
+import com.example.feature.update.AppUpdateManager
+import com.example.feature.update.AppUpdateState
+import com.example.feature.update.InstallLaunchResult
+import com.example.feature.update.UpdateCheckStatus
+import com.example.feature.update.UpdateModalSheet
 import com.example.ui.components.AKitTopBar
 import com.example.ui.components.SettingsModalSheet
 import com.example.ui.navigation.AKitBottomNavigationBar
 import com.example.ui.navigation.AKitDestination
 import com.example.ui.navigation.AKitNavigationRail
 import com.example.ui.theme.AKitTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 
 class AKitAppViewModel(
     application: Application,
@@ -117,10 +126,152 @@ class AKitAppViewModel(
         }
     }
 
+    private val _updateState = MutableStateFlow(AppUpdateState())
+    val updateState: StateFlow<AppUpdateState> = _updateState.asStateFlow()
+
     fun setAccentSwatch(swatch: AccentSwatch) {
         viewModelScope.launch {
             preferencesRepository.setAccentSwatch(swatch)
         }
+    }
+
+    fun checkForUpdates(silent: Boolean) {
+        val current = _updateState.value
+        if (current.status == UpdateCheckStatus.CHECKING || current.status == UpdateCheckStatus.DOWNLOADING) {
+            return
+        }
+        viewModelScope.launch {
+            if (!silent) {
+                _updateState.update {
+                    it.copy(
+                        status = UpdateCheckStatus.CHECKING,
+                        statusMessage = "Checking GitHub Releases...",
+                    )
+                }
+            }
+            when (val result = AppUpdateManager.checkLatestRelease(BuildConfig.VERSION_NAME)) {
+                is AppUpdateManager.CheckResult.UpdateAvailable -> {
+                    _updateState.update {
+                        it.copy(
+                            status = UpdateCheckStatus.UPDATE_AVAILABLE,
+                            release = result.release,
+                            showSheet = true,
+                            downloadedBytes = 0L,
+                            totalBytes = result.release.apkSizeBytes,
+                            downloadedApkPath = null,
+                            needsInstallPermissionHint = false,
+                            statusMessage = "Version ${result.release.tagName} available",
+                        )
+                    }
+                }
+                is AppUpdateManager.CheckResult.UpToDate -> {
+                    _updateState.update {
+                        it.copy(
+                            status = UpdateCheckStatus.UP_TO_DATE,
+                            showSheet = false,
+                            statusMessage = if (silent) null else "You're on the latest version (v${BuildConfig.VERSION_NAME})",
+                        )
+                    }
+                }
+                is AppUpdateManager.CheckResult.Error -> {
+                    if (silent) {
+                        _updateState.update {
+                            if (it.release == null) it.copy(status = UpdateCheckStatus.IDLE, statusMessage = null) else it
+                        }
+                    } else {
+                        _updateState.update {
+                            it.copy(
+                                status = UpdateCheckStatus.OFFLINE_OR_ERROR,
+                                statusMessage = result.message,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val release = _updateState.value.release ?: return
+        if (_updateState.value.status == UpdateCheckStatus.DOWNLOADING) return
+
+        viewModelScope.launch {
+            _updateState.update {
+                it.copy(
+                    status = UpdateCheckStatus.DOWNLOADING,
+                    downloadedBytes = 0L,
+                    totalBytes = release.apkSizeBytes,
+                    needsInstallPermissionHint = false,
+                    statusMessage = "Downloading ${release.apkFileName}...",
+                )
+            }
+            val apkFile = AppUpdateManager.downloadApk(
+                context = getApplication(),
+                release = release,
+            ) { downloaded, total ->
+                _updateState.update {
+                    it.copy(
+                        downloadedBytes = downloaded,
+                        totalBytes = total,
+                    )
+                }
+            }
+
+            if (apkFile == null) {
+                _updateState.update {
+                    it.copy(
+                        status = UpdateCheckStatus.OFFLINE_OR_ERROR,
+                        statusMessage = "Download failed. Check your connection or download from a-kit.akib.top.",
+                    )
+                }
+                return@launch
+            }
+
+            _updateState.update {
+                it.copy(
+                    status = UpdateCheckStatus.READY_TO_INSTALL,
+                    downloadedApkPath = apkFile.absolutePath,
+                    statusMessage = "APK ready to install",
+                )
+            }
+            launchInstallerForFile(apkFile)
+        }
+    }
+
+    fun installReadyApk() {
+        val path = _updateState.value.downloadedApkPath ?: return
+        launchInstallerForFile(File(path))
+    }
+
+    private fun launchInstallerForFile(apkFile: File) {
+        when (AppUpdateManager.installDownloadedApk(getApplication(), apkFile)) {
+            InstallLaunchResult.LAUNCHED_INSTALLER -> {
+                _updateState.update { it.copy(needsInstallPermissionHint = false) }
+            }
+            InstallLaunchResult.NEEDS_UNKNOWN_SOURCES_PERMISSION -> {
+                _updateState.update { it.copy(needsInstallPermissionHint = true) }
+            }
+            InstallLaunchResult.FAILED -> {
+                _updateState.update {
+                    it.copy(
+                        status = UpdateCheckStatus.OFFLINE_OR_ERROR,
+                        statusMessage = "Unable to launch package installer. Try downloading from a-kit.akib.top.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun openUpdateSheet() {
+        if (_updateState.value.release != null) {
+            _updateState.update { it.copy(showSheet = true) }
+        } else {
+            checkForUpdates(silent = false)
+        }
+    }
+
+    fun dismissUpdateSheet() {
+        _updateState.update { it.copy(showSheet = false) }
     }
 }
 
@@ -159,9 +310,15 @@ fun AKitApp(
     val dropViewModel: DropViewModel = viewModel(factory = factory)
 
     val preferences by appViewModel.preferences.collectAsStateWithLifecycle()
+    val updateState by appViewModel.updateState.collectAsStateWithLifecycle()
     var currentDestination by rememberSaveable { mutableStateOf(AKitDestination.POWER) }
     var appliedStartupTab by rememberSaveable { mutableStateOf(false) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
+
+    // Silent GitHub Releases update check on cold launch (fails silently when offline)
+    LaunchedEffect(Unit) {
+        appViewModel.checkForUpdates(silent = true)
+    }
 
     // Keep Charging AOD & Design Studio styles synchronized with PowerTelemetryEngine (HUD + AOD)
     LaunchedEffect(
@@ -312,11 +469,26 @@ fun AKitApp(
             if (showSettingsSheet) {
                 SettingsModalSheet(
                     preferences = preferences,
+                    updateState = updateState,
                     onSelectThemeMode = appViewModel::setThemeMode,
                     onToggleDynamicColor = appViewModel::setDynamicColor,
                     onToggleAutoLaunchAod = appViewModel::setAutoLaunchAodOnPlugIn,
                     onSelectStartupTab = appViewModel::setDefaultStartupTab,
+                    onCheckForUpdates = { appViewModel.checkForUpdates(silent = false) },
+                    onOpenUpdateSheet = {
+                        showSettingsSheet = false
+                        appViewModel.openUpdateSheet()
+                    },
                     onDismiss = { showSettingsSheet = false },
+                )
+            }
+
+            if (updateState.showSheet && updateState.release != null) {
+                UpdateModalSheet(
+                    updateState = updateState,
+                    onDownloadAndInstall = appViewModel::downloadAndInstallUpdate,
+                    onInstallReadyApk = appViewModel::installReadyApk,
+                    onDismiss = appViewModel::dismissUpdateSheet,
                 )
             }
         }
