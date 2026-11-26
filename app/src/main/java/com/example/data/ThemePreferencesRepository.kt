@@ -43,7 +43,9 @@ enum class GaugeStyle(val storageKey: String, val label: String, val subtitle: S
     CORNER_BRACKETS_HUD("corner_brackets", "Corner Brackets HUD", "4-corner viewfinder frame"),
     LIVE_SPARKLINE_WAVE("sparkline_wave", "Live Sparkline Wave", "Animated waveform readout"),
     HORIZONTAL_BAR_STACK("bar_stack", "Horizontal Bar Stack", "Stacked power signal bars"),
-    INVERTED_FUNNEL_BARS("funnel_bars", "Inverted Funnel Bars", "Tapered triangular bars");
+    INVERTED_FUNNEL_BARS("funnel_bars", "Inverted Funnel Bars", "Tapered triangular bars"),
+    DOUBLE_RING_NEON_ARC("double_ring_neon_arc", "Double-Ring Neon", "Outer dark-teal ring & glowing arc"),
+    BRAIDED_WAVE_HELIX("braided_wave_helix", "Braided Wave Helix", "Intertwined dual-sine neon ring");
 
     companion object {
         fun fromKey(key: String?): GaugeStyle =
@@ -68,7 +70,10 @@ enum class ClockNumberStyle(val storageKey: String, val label: String, val subti
     MONTSERRAT_BOLD("montserrat_bold", "Bold Geometric", "Montserrat Alternates Bold"),
     SLIM_LIGHT_MODERN("slim_light", "Slim Light", "Thin geometric modern"),
     RETRO_STENCIL("retro_stencil", "Retro Stencil", "Bold split-slab stencil"),
-    OUTLINE_DIGITAL("outline_digital", "Outlined Hollow", "Stroke-outlined numerals");
+    OUTLINE_DIGITAL("outline_digital", "Outlined Hollow", "Stroke-outlined numerals"),
+    EDITORIAL_DECORATIVE_SERIF("editorial_decorative_serif", "Decorative Serif", "Vintage serif with inline accents"),
+    BOLD_ROUNDED_SANS("bold_rounded_sans", "Bold Rounded Sans", "Heavy soft-cornered digital"),
+    GEOMETRIC_TECH_BLOCK("geometric_tech_block", "Geometric Tech Block", "Sharp squared futuristic digits");
 
     companion object {
         fun fromKey(key: String?): ClockNumberStyle = when (key) {
@@ -82,7 +87,10 @@ enum class BatteryDetailsCardStyle(val storageKey: String, val label: String, va
     OUTLINED_CARDS("outlined_cards", "Outlined Cards", "3 bordered rounded cards"),
     MINIMAL_BORDERLESS("minimal_borderless", "Minimal Columns", "Hairline-separated open row"),
     FILLED_DARK_PILLS("filled_pills", "Filled Dark Pills", "Solid #141714 elevated pills"),
-    COMPACT_SINGLE_BAR("compact_bar", "Compact Bar", "Unified inline pill strip");
+    COMPACT_SINGLE_BAR("compact_bar", "Compact Bar", "Unified inline pill strip"),
+    ICON_TOP_OUTLINED("icon_top_outlined", "Icon-Top Outlined", "Dark-cyan bordered icon cards"),
+    MINIMAL_CIRCULAR_BADGES("minimal_circular_badges", "Minimal Circles", "Clean icon-free circular badges"),
+    TOP_GLOW_GRADIENT("top_glow_gradient", "Top-Glow Gradient", "Top cyan glow fading into #070B0D");
 
     companion object {
         fun fromKey(key: String?): BatteryDetailsCardStyle =

@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -141,11 +142,12 @@ fun AodSpeedometerGauge(
         MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    // Continuous phase for animated styles (Vertical Pill wave, Atomic Swirl, Sparkline Wave, Orbit dot)
+    // Continuous phase for animated styles (Vertical Pill wave, Atomic Swirl, Sparkline Wave, Orbit dot, Braided Helix)
     val needsMotion = gaugeStyle == GaugeStyle.VERTICAL_BATTERY_PILL ||
         gaugeStyle == GaugeStyle.ATOMIC_SWIRL ||
         gaugeStyle == GaugeStyle.LIVE_SPARKLINE_WAVE ||
-        gaugeStyle == GaugeStyle.CONCENTRIC_ORBIT
+        gaugeStyle == GaugeStyle.CONCENTRIC_ORBIT ||
+        gaugeStyle == GaugeStyle.BRAIDED_WAVE_HELIX
 
     val animPhase = if (needsMotion && !powerSavingSlowAnim) {
         val infiniteTransition = rememberInfiniteTransition(label = "aod_gauge_motion")
@@ -907,6 +909,191 @@ private fun DrawScope.drawGaugeCanvasStyle(
                     cornerRadius = CornerRadius(barHeight / 2f, barHeight / 2f),
                 )
             }
+        }
+
+        GaugeStyle.DOUBLE_RING_NEON_ARC -> {
+            // Subtle outer dark-teal halo ring surrounding a thick glowing neon arc with bright radial tip dot
+            val outerStroke = if (compactMode) 1.5.dp.toPx() else 2.6.dp.toPx()
+            val outerInset = if (compactMode) 2.5.dp.toPx() else 5.dp.toPx()
+            val outerRadius = (size.minDimension / 2f - outerInset).coerceAtLeast(8f)
+            val darkTealRingColor = lerp(Color(0xFF071E24), accent, 0.24f).copy(alpha = 0.72f)
+            val innerTrackColor = lerp(Color(0xFF0A1D23), accent, 0.14f).copy(alpha = 0.85f)
+
+            // Outer subtle dark-teal ring
+            drawCircle(
+                color = darkTealRingColor,
+                radius = outerRadius,
+                center = center,
+                style = Stroke(width = outerStroke),
+            )
+
+            // Thick inner glowing progress arc
+            val arcStroke = if (compactMode) 5.5.dp.toPx() else 12.5.dp.toPx()
+            val innerInset = outerInset + (if (compactMode) 6.5.dp.toPx() else 15.dp.toPx())
+            val arcSize = Size(size.width - innerInset * 2f, size.height - innerInset * 2f)
+            val arcTopLeft = Offset(innerInset, innerInset)
+            val arcStart = -90f
+            val sweepDeg = 360f * progress
+
+            drawArc(
+                color = innerTrackColor,
+                startAngle = arcStart,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = arcTopLeft,
+                size = arcSize,
+                style = Stroke(width = arcStroke, cap = StrokeCap.Round),
+            )
+            // Soft outer neon bloom
+            drawArc(
+                color = accent.copy(alpha = 0.18f),
+                startAngle = arcStart,
+                sweepAngle = sweepDeg,
+                useCenter = false,
+                topLeft = arcTopLeft,
+                size = arcSize,
+                style = Stroke(width = arcStroke * 2.1f, cap = StrokeCap.Round),
+            )
+            // Mid glow halo
+            drawArc(
+                color = accent.copy(alpha = 0.36f),
+                startAngle = arcStart,
+                sweepAngle = sweepDeg,
+                useCenter = false,
+                topLeft = arcTopLeft,
+                size = arcSize,
+                style = Stroke(width = arcStroke * 1.42f, cap = StrokeCap.Round),
+            )
+            // Crisp glowing core arc
+            drawArc(
+                brush = Brush.sweepGradient(
+                    0.0f to accent.copy(alpha = 0.78f),
+                    0.5f to accent,
+                    1.0f to lerp(accent, Color.White, 0.22f),
+                    center = center,
+                ),
+                startAngle = arcStart,
+                sweepAngle = sweepDeg,
+                useCenter = false,
+                topLeft = arcTopLeft,
+                size = arcSize,
+                style = Stroke(width = arcStroke, cap = StrokeCap.Round),
+            )
+
+            // Bright glowing radial dot/cap at the active arc tip
+            val tipRad = (arcStart + sweepDeg) * PI / 180.0
+            val innerRadius = arcSize.width / 2f
+            val tipCenter = Offset(
+                x = center.x + (innerRadius * cos(tipRad)).toFloat(),
+                y = center.y + (innerRadius * sin(tipRad)).toFloat(),
+            )
+            val glowRadius = if (compactMode) 6.5.dp.toPx() else 14.dp.toPx()
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.92f),
+                        accent.copy(alpha = 0.65f),
+                        Color.Transparent,
+                    ),
+                    center = tipCenter,
+                    radius = glowRadius,
+                ),
+                radius = glowRadius,
+                center = tipCenter,
+            )
+            drawCircle(
+                color = Color.White,
+                radius = arcStroke * 0.42f,
+                center = tipCenter,
+            )
+        }
+
+        GaugeStyle.BRAIDED_WAVE_HELIX -> {
+            // Two intertwined sinusoidal wave paths forming a circular neon helix gauge
+            val amp = if (compactMode) 2.8.dp.toPx() else 6.8.dp.toPx()
+            val strokePx = if (compactMode) 1.8.dp.toPx() else 3.4.dp.toPx()
+            val baseRadius = (size.minDimension / 2f - amp - strokePx - (if (compactMode) 2.5.dp.toPx() else 6.dp.toPx()))
+                .coerceAtLeast(10f)
+            val waveCycles = 12f
+            val totalSteps = if (compactMode) 144 else 260
+            val activeSteps = (totalSteps * progress).roundToInt().coerceIn(2, totalSteps)
+            val darkTealTrack = lerp(Color(0xFF0A242B), accent, 0.22f).copy(alpha = 0.72f)
+            val brightStrandColor = lerp(accent, Color.White, 0.24f)
+
+            fun buildHelixPath(stepCount: Int, phaseShift: Float): Path {
+                return Path().apply {
+                    for (i in 0..stepCount) {
+                        val frac = i.toFloat() / totalSteps
+                        val theta = -PI / 2.0 + frac * 2.0 * PI
+                        val wave = sin(waveCycles * (frac * 2.0 * PI) + phase + phaseShift).toFloat()
+                        val r = baseRadius + amp * wave
+                        val x = center.x + (r * cos(theta)).toFloat()
+                        val y = center.y + (r * sin(theta)).toFloat()
+                        if (i == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                }
+            }
+
+            // Full 360° inactive dark-teal braided tracks
+            val trackPathA = buildHelixPath(totalSteps, 0f)
+            val trackPathB = buildHelixPath(totalSteps, PI.toFloat())
+            drawPath(
+                path = trackPathA,
+                color = darkTealTrack,
+                style = Stroke(width = strokePx, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+            drawPath(
+                path = trackPathB,
+                color = darkTealTrack.copy(alpha = 0.52f),
+                style = Stroke(width = strokePx, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+
+            // Active percentage illuminated in bright glowing neon cyan/accent
+            val activePathA = buildHelixPath(activeSteps, 0f)
+            val activePathB = buildHelixPath(activeSteps, PI.toFloat())
+
+            // Neon glow underlay
+            drawPath(
+                path = activePathA,
+                color = accent.copy(alpha = 0.24f),
+                style = Stroke(width = strokePx * 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+            drawPath(
+                path = activePathB,
+                color = accent.copy(alpha = 0.18f),
+                style = Stroke(width = strokePx * 2.3f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+
+            // Crisp intertwined active helix strands
+            drawPath(
+                path = activePathB,
+                color = accent.copy(alpha = 0.82f),
+                style = Stroke(width = strokePx, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+            drawPath(
+                path = activePathA,
+                color = brightStrandColor,
+                style = Stroke(width = strokePx * 1.05f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+
+            // Luminous node at active tip
+            val tipFrac = activeSteps.toFloat() / totalSteps
+            val tipTheta = -PI / 2.0 + tipFrac * 2.0 * PI
+            val tipR = baseRadius + amp * sin(waveCycles * (tipFrac * 2.0 * PI) + phase).toFloat()
+            val tipOffset = Offset(
+                center.x + (tipR * cos(tipTheta)).toFloat(),
+                center.y + (tipR * sin(tipTheta)).toFloat(),
+            )
+            drawCircle(
+                color = accent.copy(alpha = 0.45f),
+                radius = strokePx * 2.1f,
+                center = tipOffset,
+            )
+            drawCircle(
+                color = Color.White,
+                radius = strokePx * 0.85f,
+                center = tipOffset,
+            )
         }
     }
 }

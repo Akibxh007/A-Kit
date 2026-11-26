@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.CallMade
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Bolt
@@ -78,7 +79,7 @@ import com.example.feature.aod.AodNotificationIconsRow
 import com.example.feature.aod.AodSpeedometerGauge
 import com.example.feature.aod.MiniGaugeStyleThumbnail
 import com.example.feature.aod.ResolvedAodMetric
-import com.example.feature.aod.buildClockTextStyle
+import com.example.feature.aod.StyledClockDigitsText
 import com.example.feature.aod.formatAodDate
 import com.example.feature.aod.formatClockTime
 import com.example.feature.aod.resolveAodMetrics
@@ -285,11 +286,11 @@ fun DesignScreen(
             )
         }
 
-        // 3. Clock Style Picker (6 Styles: Off + 5 distinct typography styles)
+        // 3. Clock Style Picker (9 Styles: Off + 8 distinct typography styles)
         item(key = "design_clock_header") {
             SectionHeader(
                 title = "Clock Style",
-                badgeText = "6 STYLES",
+                badgeText = "9 STYLES",
                 modifier = Modifier.widthIn(max = 640.dp),
             )
         }
@@ -321,11 +322,11 @@ fun DesignScreen(
             }
         }
 
-        // 4. Speedometer / Gauge Style Picker (12 Custom Canvas Styles)
+        // 4. Speedometer / Gauge Style Picker (14 Custom Canvas Styles)
         item(key = "design_gauge_header") {
             SectionHeader(
                 title = "Speedometer & Gauge Style",
-                badgeText = "12 STYLES",
+                badgeText = "14 STYLES",
                 modifier = Modifier.widthIn(max = 640.dp),
             )
         }
@@ -357,11 +358,11 @@ fun DesignScreen(
             }
         }
 
-        // 5. Battery Details Card Style Picker (4 Layouts)
+        // 5. Battery Details Card Style Picker (7 Layouts)
         item(key = "design_details_style_header") {
             SectionHeader(
                 title = "Battery Details Style",
-                badgeText = "4 LAYOUTS",
+                badgeText = "7 LAYOUTS",
                 modifier = Modifier.widthIn(max = 640.dp),
             )
         }
@@ -696,7 +697,7 @@ private fun LivePhoneMockupPreview(
     val previewMa = if (powerState.hasLiveReading) powerState.currentNowMa else 3820
 
     val bottomPowerLabel = if (preferences.showWattsInsteadOfMa) {
-        String.format(Locale.US, "%s%.1f W", if (previewCharging) "" else "-", abs(previewWatts))
+        String.format(Locale.US, "%s%.2f W", if (previewCharging) "" else "-", abs(previewWatts))
     } else {
         "${if (previewMa >= 0) "+" else ""}$previewMa mA"
     }
@@ -792,11 +793,22 @@ private fun LivePhoneMockupPreview(
             }
 
             if (preferences.showMoreInfoButton) {
-                Text(
-                    text = "More Info ⌄",
-                    style = MonoLabelStyle.copy(fontSize = 8.sp),
-                    color = Color(0xFF7B8A9B),
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = "More Info",
+                        style = MonoLabelStyle.copy(fontSize = 8.sp),
+                        color = Color(0xFF7B8A9B),
+                    )
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.CallMade,
+                        contentDescription = null,
+                        tint = Color(0xFF7B8A9B),
+                        modifier = Modifier.size(9.dp),
+                    )
+                }
             }
 
             // Bottom Row: Optional Torch | Live Power Readout | Optional Camera
@@ -996,23 +1008,21 @@ private fun MiniClockStyleThumbnail(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Text(
-                text = "12:48",
-                style = buildClockTextStyle(
-                    style = style,
-                    fontSize = 27.sp,
-                    strokeWidthDp = 1.4.dp,
-                ),
-                color = if (style == ClockNumberStyle.OUTLINE_DIGITAL) {
-                    accentColor
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-                maxLines = 1,
-                softWrap = false,
+            val previewFontSize = when (style) {
+                ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> 22.sp
+                ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> 25.sp
+                else -> 27.sp
+            }
+            StyledClockDigitsText(
+                clockStyle = style,
+                timeText = "7:20",
+                fontSize = previewFontSize,
+                strokeWidthDp = 1.4.dp,
+                primaryColor = MaterialTheme.colorScheme.onSurface,
+                accent = accentColor,
             )
             Text(
-                text = "Wed, Nov 26",
+                text = "Thu, Nov 26",
                 style = MonoLabelStyle.copy(fontSize = 9.5.sp),
                 color = accentColor,
                 maxLines = 1,

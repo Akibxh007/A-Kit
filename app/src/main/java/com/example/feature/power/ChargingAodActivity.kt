@@ -42,14 +42,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.CallMade
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.ExpandLess
-import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FlashlightOff
 import androidx.compose.material.icons.rounded.FlashlightOn
-import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -214,6 +212,7 @@ class ChargingAodActivity : ComponentActivity() {
     private fun openMainDashboard() {
         val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra(MainActivity.EXTRA_OPEN_POWER_TAB, true)
         }
         runCatching { startActivity(intent) }
         finish()
@@ -284,7 +283,6 @@ private fun ChargingAodScreen(
     }
 
     var flashlightOn by remember { mutableStateOf(false) }
-    var showMoreInfo by remember { mutableStateOf(false) }
     var showTapHud by remember { mutableStateOf(isManualPreview) }
     var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var isDimmed by remember { mutableStateOf(false) }
@@ -521,93 +519,37 @@ private fun ChargingAodScreen(
                 }
 
                 if (prefs.showMoreInfoButton) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    Surface(
+                        onClick = {
+                            registerUserTouch()
+                            onOpenFullDashboard()
+                        },
+                        shape = CircleShape,
+                        color = Color.Transparent,
+                        modifier = Modifier.testTag("aod_more_info_link"),
                     ) {
                         Row(
-                            modifier = Modifier
-                                .clickable {
-                                    registerUserTouch()
-                                    showMoreInfo = !showMoreInfo
-                                }
-                                .padding(horizontal = 12.dp, vertical = 4.dp)
-                                .testTag("aod_more_info_link"),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
                             Text(
-                                text = if (showMoreInfo) "Hide Info" else "More Info",
+                                text = "More Info",
                                 style = MonoLabelStyle.copy(
-                                    fontSize = 12.sp,
+                                    fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = 0.8.sp,
+                                    letterSpacing = 0.7.sp,
                                 ),
-                                color = Color(0xFF8C9BAE),
+                                color = Color(0xFF93A5B8),
                                 maxLines = 1,
                                 softWrap = false,
                             )
                             Icon(
-                                imageVector = if (showMoreInfo) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                contentDescription = "Toggle more charging info",
-                                tint = Color(0xFF8C9BAE),
-                                modifier = Modifier.size(16.dp),
+                                imageVector = Icons.AutoMirrored.Rounded.CallMade,
+                                contentDescription = "Open detailed battery health and telemetry",
+                                tint = accent.copy(alpha = 0.90f),
+                                modifier = Modifier.size(15.dp),
                             )
-                        }
-
-                        AnimatedVisibility(
-                            visible = showMoreInfo,
-                            enter = fadeIn(tween(200)) + expandVertically(),
-                            exit = fadeOut(tween(180)) + shrinkVertically(),
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = Color.Black,
-                                border = BorderStroke(1.dp, Color(0xFF1D2733)),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                ) {
-                                    Text(
-                                        text = "${if (state.currentNowMa >= 0) "+" else ""}${state.currentNowMa} mA • ${state.pluggedLabel} • Peak ${String.format(Locale.US, "%.1fW", state.peakSessionWatts)}",
-                                        style = MonoLabelStyle.copy(fontSize = 11.sp),
-                                        color = Color(0xFFCBD5E1),
-                                        maxLines = 1,
-                                        softWrap = false,
-                                    )
-                                    Surface(
-                                        onClick = onOpenFullDashboard,
-                                        shape = CircleShape,
-                                        color = accent.copy(alpha = 0.16f),
-                                        modifier = Modifier.testTag("aod_open_dashboard_button"),
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        ) {
-                                            Text(
-                                                text = "OPEN",
-                                                style = MonoLabelStyle.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
-                                                color = accent,
-                                                maxLines = 1,
-                                                softWrap = false,
-                                            )
-                                            Icon(
-                                                imageVector = Icons.Rounded.OpenInNew,
-                                                contentDescription = "Open Power Dashboard",
-                                                tint = accent,
-                                                modifier = Modifier.size(12.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
                 }

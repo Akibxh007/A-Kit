@@ -2,16 +2,19 @@ package com.example.feature.aod
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,6 +37,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -54,9 +59,12 @@ import com.example.data.BatteryDetailsCardStyle
 import com.example.data.ClockNumberStyle
 import com.example.feature.power.PowerTelemetryState
 import com.example.ui.theme.BodoniModaFontFamily
+import com.example.ui.theme.CinzelDecorativeFontFamily
+import com.example.ui.theme.FredokaFontFamily
 import com.example.ui.theme.JostFontFamily
 import com.example.ui.theme.MonoLabelStyle
 import com.example.ui.theme.MontserratAlternatesFontFamily
+import com.example.ui.theme.OrbitronFontFamily
 import com.example.ui.theme.RobotoCondensedFontFamily
 import com.example.ui.theme.StardosStencilFontFamily
 import java.text.SimpleDateFormat
@@ -99,6 +107,9 @@ fun clockFontFamilyFor(style: ClockNumberStyle): FontFamily = when (style) {
     ClockNumberStyle.SLIM_LIGHT_MODERN -> JostFontFamily
     ClockNumberStyle.RETRO_STENCIL -> StardosStencilFontFamily
     ClockNumberStyle.OUTLINE_DIGITAL -> MontserratAlternatesFontFamily
+    ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> CinzelDecorativeFontFamily
+    ClockNumberStyle.BOLD_ROUNDED_SANS -> FredokaFontFamily
+    ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> OrbitronFontFamily
 }
 
 @Composable
@@ -146,12 +157,100 @@ fun buildClockTextStyle(
             letterSpacing = 1.6.sp,
             drawStyle = Stroke(width = strokePx, join = StrokeJoin.Round),
         )
+        ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> TextStyle(
+            fontFamily = CinzelDecorativeFontFamily,
+            fontWeight = FontWeight.Bold,
+            fontSize = fontSize,
+            letterSpacing = 0.4.sp,
+        )
+        ClockNumberStyle.BOLD_ROUNDED_SANS -> TextStyle(
+            fontFamily = FredokaFontFamily,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = fontSize,
+            letterSpacing = (-0.6).sp,
+        )
+        ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> TextStyle(
+            fontFamily = OrbitronFontFamily,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = fontSize,
+            letterSpacing = 1.6.sp,
+        )
     }
 }
 
 /**
- * Renders the AOD Clock & Date header in any of the 6 [ClockNumberStyle]s (including true hollow
- * stroke-outlined numerals and OFF mode) for both Full-Screen AOD and the Live Phone Mockup.
+ * Shared digit renderer supporting layered vintage inline stroke accents for
+ * [ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF] and crisp hollow outlines for
+ * [ClockNumberStyle.OUTLINE_DIGITAL].
+ */
+@Composable
+fun StyledClockDigitsText(
+    clockStyle: ClockNumberStyle,
+    timeText: String,
+    fontSize: TextUnit,
+    strokeWidthDp: Dp,
+    primaryColor: Color,
+    accent: Color,
+    modifier: Modifier = Modifier,
+) {
+    val baseStyle = buildClockTextStyle(
+        style = clockStyle,
+        fontSize = fontSize,
+        strokeWidthDp = strokeWidthDp,
+    )
+    if (clockStyle == ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF) {
+        val density = LocalDensity.current
+        val inlineStrokePx = with(density) { (strokeWidthDp * 0.62f).toPx() }
+        val outerHaloPx = with(density) { (strokeWidthDp * 1.15f).toPx() }
+        Box(
+            modifier = modifier,
+            contentAlignment = Alignment.Center,
+        ) {
+            // Subtle outer vintage sheen outline
+            Text(
+                text = timeText,
+                style = baseStyle.copy(
+                    drawStyle = Stroke(width = outerHaloPx, join = StrokeJoin.Miter),
+                ),
+                color = accent.copy(alpha = 0.24f),
+                maxLines = 1,
+                softWrap = false,
+            )
+            // Primary high-contrast vintage display serif fill
+            Text(
+                text = timeText,
+                style = baseStyle,
+                color = primaryColor,
+                maxLines = 1,
+                softWrap = false,
+            )
+            // Delicate inline engraved accent stroke
+            Text(
+                text = timeText,
+                style = baseStyle.copy(
+                    drawStyle = Stroke(width = inlineStrokePx, join = StrokeJoin.Miter),
+                ),
+                color = Color(0xFF0A1216).copy(alpha = 0.62f),
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
+    } else {
+        Text(
+            text = timeText,
+            style = baseStyle,
+            color = if (clockStyle == ClockNumberStyle.OUTLINE_DIGITAL) accent else primaryColor,
+            maxLines = 1,
+            softWrap = false,
+            modifier = modifier,
+        )
+    }
+}
+
+/**
+ * Renders the AOD Clock & Date header in any of the 9 [ClockNumberStyle]s (including true hollow
+ * stroke-outlined numerals, vintage inline decorative serif, and OFF mode) for both Full-Screen AOD
+ * and the Live Phone Mockup.
  */
 @Composable
 fun AodClockDisplay(
@@ -166,29 +265,25 @@ fun AodClockDisplay(
         return
     }
 
-    val clockSize = if (compactMode) 36.sp else 78.sp
+    val clockSize = when (clockStyle) {
+        ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> if (compactMode) 30.sp else 64.sp
+        ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> if (compactMode) 33.sp else 72.sp
+        else -> if (compactMode) 36.sp else 78.sp
+    }
     val strokeDp = if (compactMode) 1.3.dp else 2.4.dp
-    val clockTextStyle = buildClockTextStyle(
-        style = clockStyle,
-        fontSize = clockSize,
-        strokeWidthDp = strokeDp,
-    )
 
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(if (compactMode) 2.dp else 6.dp),
     ) {
-        Text(
-            text = timeText,
-            style = clockTextStyle,
-            color = if (clockStyle == ClockNumberStyle.OUTLINE_DIGITAL) {
-                accent
-            } else {
-                Color(0xFFF6F9FD)
-            },
-            maxLines = 1,
-            softWrap = false,
+        StyledClockDigitsText(
+            clockStyle = clockStyle,
+            timeText = timeText,
+            fontSize = clockSize,
+            strokeWidthDp = strokeDp,
+            primaryColor = Color(0xFFF6F9FD),
+            accent = accent,
             modifier = Modifier.testTag("aod_clock_text"),
         )
         Text(
@@ -217,16 +312,16 @@ fun resolveAodMetrics(
             AodMetricSlot.TEMP -> ResolvedAodMetric(
                 slot = slot,
                 label = "TEMP",
-                value = if (state.hasLiveReading) state.settings.tempUnit.format(state.temperatureCelsius) else "34.2°C",
+                value = if (state.hasLiveReading) state.settings.tempUnit.format(state.temperatureCelsius) else "36.8°C",
                 icon = Icons.Rounded.Thermostat,
             )
             AodMetricSlot.VOLTAGE -> ResolvedAodMetric(
                 slot = slot,
                 label = "VOLTAGE",
                 value = if (state.hasLiveReading) {
-                    String.format(Locale.US, "%.2f V", state.rawVoltageMv / 1000f)
+                    String.format(Locale.US, "%.3f V", state.rawVoltageMv / 1000f)
                 } else {
-                    "4.18 V"
+                    "3.702 V"
                 },
                 icon = Icons.Rounded.ElectricBolt,
             )
@@ -508,6 +603,204 @@ fun AodBatteryDetailsRow(
                                     fontSize = if (compactMode) 8.5.sp else 13.sp,
                                 ),
                                 color = Color(0xFFF3F6FA),
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        BatteryDetailsCardStyle.ICON_TOP_OUTLINED -> {
+            Row(
+                modifier = modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(if (compactMode) 5.dp else 10.dp),
+            ) {
+                safeMetrics.forEach { metric ->
+                    Surface(
+                        shape = RoundedCornerShape(if (compactMode) 10.dp else 16.dp),
+                        color = Color(0xFF04090B),
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.36f)),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    horizontal = if (compactMode) 4.dp else 8.dp,
+                                    vertical = if (compactMode) 6.dp else 12.dp,
+                                ),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(if (compactMode) 2.5.dp else 6.dp),
+                        ) {
+                            Icon(
+                                imageVector = metric.icon,
+                                contentDescription = metric.slot.label,
+                                tint = accent,
+                                modifier = Modifier.size(if (compactMode) 12.dp else 19.dp),
+                            )
+                            Text(
+                                text = metric.value,
+                                style = TextStyle(
+                                    fontFamily = MontserratAlternatesFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = valueSize,
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = metric.slot.label,
+                                style = TextStyle(
+                                    fontFamily = RobotoCondensedFontFamily,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = if (compactMode) 7.5.sp else 11.sp,
+                                    letterSpacing = 0.4.sp,
+                                ),
+                                color = Color(0xFF7D94A1),
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        BatteryDetailsCardStyle.MINIMAL_CIRCULAR_BADGES -> {
+            Row(
+                modifier = modifier.fillMaxWidth(),
+                horizontalArrangement = if (compactMode) {
+                    Arrangement.SpaceEvenly
+                } else {
+                    Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
+                },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                safeMetrics.forEach { metric ->
+                    val circleModifier = if (compactMode) {
+                        Modifier.size(56.dp)
+                    } else {
+                        Modifier
+                            .weight(1f)
+                            .widthIn(max = 104.dp)
+                            .aspectRatio(1f)
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF04080A),
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.34f)),
+                        modifier = circleModifier,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = if (compactMode) 3.dp else 8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(
+                                space = if (compactMode) 1.5.dp else 4.dp,
+                                alignment = Alignment.CenterVertically,
+                            ),
+                        ) {
+                            Text(
+                                text = metric.value,
+                                style = TextStyle(
+                                    fontFamily = MontserratAlternatesFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = if (compactMode) 9.sp else 14.5.sp,
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = metric.slot.label,
+                                style = TextStyle(
+                                    fontFamily = RobotoCondensedFontFamily,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = if (compactMode) 7.sp else 10.5.sp,
+                                    letterSpacing = 0.4.sp,
+                                ),
+                                color = Color(0xFF7D94A1),
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        BatteryDetailsCardStyle.TOP_GLOW_GRADIENT -> {
+            val cardShape = RoundedCornerShape(if (compactMode) 10.dp else 16.dp)
+            Row(
+                modifier = modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(if (compactMode) 5.dp else 10.dp),
+            ) {
+                safeMetrics.forEach { metric ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(cardShape)
+                            .background(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        accent.copy(alpha = 0.18f),
+                                        Color(0xFF070B0D),
+                                    ),
+                                ),
+                            )
+                            .border(
+                                width = 1.dp,
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        accent.copy(alpha = 0.46f),
+                                        accent.copy(alpha = 0.14f),
+                                    ),
+                                ),
+                                shape = cardShape,
+                            )
+                            .padding(
+                                horizontal = if (compactMode) 4.dp else 8.dp,
+                                vertical = if (compactMode) 6.dp else 12.dp,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(if (compactMode) 2.5.dp else 6.dp),
+                        ) {
+                            Icon(
+                                imageVector = metric.icon,
+                                contentDescription = metric.slot.label,
+                                tint = accent,
+                                modifier = Modifier.size(if (compactMode) 12.dp else 19.dp),
+                            )
+                            Text(
+                                text = metric.value,
+                                style = TextStyle(
+                                    fontFamily = MontserratAlternatesFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = valueSize,
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = metric.slot.label,
+                                style = TextStyle(
+                                    fontFamily = RobotoCondensedFontFamily,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = if (compactMode) 7.5.sp else 11.sp,
+                                    letterSpacing = 0.4.sp,
+                                ),
+                                color = Color(0xFF839AA7),
                                 maxLines = 1,
                                 softWrap = false,
                             )

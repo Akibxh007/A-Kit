@@ -16,6 +16,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var preferencesRepository: ThemePreferencesRepository
     private var pendingDropUrl by mutableStateOf<String?>(null)
+    private var pendingOpenPowerTab by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Install AndroidX SplashScreen before super.onCreate so cold start renders pure #000000 immediately
@@ -25,6 +26,7 @@ class MainActivity : ComponentActivity() {
 
         preferencesRepository = ThemePreferencesRepository(applicationContext)
         pendingDropUrl = extractDropUrl(intent)
+        pendingOpenPowerTab = intent?.getBooleanExtra(EXTRA_OPEN_POWER_TAB, false) == true
 
         // Render initial Compose frame immediately (< 150ms); all IO, DataStore, and service starts run async
         setContent {
@@ -32,6 +34,8 @@ class MainActivity : ComponentActivity() {
                 preferencesRepository = preferencesRepository,
                 incomingDropUrl = pendingDropUrl,
                 onConsumeIncomingDropUrl = { pendingDropUrl = null },
+                openPowerTabRequested = pendingOpenPowerTab,
+                onConsumeOpenPowerTabRequest = { pendingOpenPowerTab = false },
             )
         }
     }
@@ -42,11 +46,18 @@ class MainActivity : ComponentActivity() {
         extractDropUrl(intent)?.let { url ->
             pendingDropUrl = url
         }
+        if (intent.getBooleanExtra(EXTRA_OPEN_POWER_TAB, false)) {
+            pendingOpenPowerTab = true
+        }
     }
 
     private fun extractDropUrl(intent: Intent?): String? {
         if (intent?.action != Intent.ACTION_VIEW) return null
         val raw = intent.dataString ?: return null
         return if (DropUrlParser.parseQrPayload(raw) != null) raw else null
+    }
+
+    companion object {
+        const val EXTRA_OPEN_POWER_TAB = "extra_open_power_tab"
     }
 }

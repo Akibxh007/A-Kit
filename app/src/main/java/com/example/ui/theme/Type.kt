@@ -44,6 +44,26 @@ val JostFontFamily = FontFamily(
     Font(R.font.jost, FontWeight.Medium),
 )
 
+val CinzelDecorativeFontFamily = FontFamily(
+    Font(R.font.cinzel_decorative, FontWeight.Normal),
+    Font(R.font.cinzel_decorative, FontWeight.Bold),
+    Font(R.font.cinzel_decorative, FontWeight.ExtraBold),
+)
+
+val FredokaFontFamily = FontFamily(
+    Font(R.font.fredoka, FontWeight.Medium),
+    Font(R.font.fredoka, FontWeight.SemiBold),
+    Font(R.font.fredoka, FontWeight.Bold),
+    Font(R.font.fredoka, FontWeight.ExtraBold),
+)
+
+val OrbitronFontFamily = FontFamily(
+    Font(R.font.orbitron, FontWeight.Medium),
+    Font(R.font.orbitron, FontWeight.SemiBold),
+    Font(R.font.orbitron, FontWeight.Bold),
+    Font(R.font.orbitron, FontWeight.ExtraBold),
+)
+
 // Compatibility aliases mapped cleanly to our new font pairing
 val SpaceGroteskFontFamily = MontserratAlternatesFontFamily
 val PlusJakartaSansFontFamily = RobotoCondensedFontFamily

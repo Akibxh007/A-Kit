@@ -302,6 +302,8 @@ fun AKitApp(
     preferencesRepository: ThemePreferencesRepository,
     incomingDropUrl: String? = null,
     onConsumeIncomingDropUrl: () -> Unit = {},
+    openPowerTabRequested: Boolean = false,
+    onConsumeOpenPowerTabRequest: () -> Unit = {},
 ) {
     val application = LocalContext.current.applicationContext as Application
     val factory = remember(application, preferencesRepository) {
@@ -318,7 +320,7 @@ fun AKitApp(
     var currentDestination by rememberSaveable { mutableStateOf(AKitDestination.POWER) }
     var appliedStartupTab by rememberSaveable { mutableStateOf(false) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
-    var showSplashOverlay by rememberSaveable { mutableStateOf(incomingDropUrl.isNullOrBlank()) }
+    var showSplashOverlay by rememberSaveable { mutableStateOf(incomingDropUrl.isNullOrBlank() && !openPowerTabRequested) }
 
     // Silent GitHub Releases update check deferred past splash animation (zero cold-start contention)
     LaunchedEffect(Unit) {
@@ -332,14 +334,24 @@ fun AKitApp(
         PowerTelemetryEngine.updateDesignPreferences(preferences)
     }
 
-    // Apply user's preferred Default Startup Tab once on cold launch (unless a Drop deep link arrived)
-    LaunchedEffect(preferences.defaultStartupTab, incomingDropUrl) {
-        if (!appliedStartupTab && incomingDropUrl == null) {
+    // Apply user's preferred Default Startup Tab once on cold launch (unless a deep link or AOD More Info arrived)
+    LaunchedEffect(preferences.defaultStartupTab, incomingDropUrl, openPowerTabRequested) {
+        if (!appliedStartupTab && incomingDropUrl == null && !openPowerTabRequested) {
             val preferred = AKitDestination.entries.firstOrNull { it.route == preferences.defaultStartupTab }
             if (preferred != null) {
                 currentDestination = preferred
             }
             appliedStartupTab = true
+        }
+    }
+
+    // Navigate directly to detailed Power telemetry dashboard when launched from AOD "More Info ↗"
+    LaunchedEffect(openPowerTabRequested) {
+        if (openPowerTabRequested) {
+            showSplashOverlay = false
+            appliedStartupTab = true
+            currentDestination = AKitDestination.POWER
+            onConsumeOpenPowerTabRequest()
         }
     }
 
