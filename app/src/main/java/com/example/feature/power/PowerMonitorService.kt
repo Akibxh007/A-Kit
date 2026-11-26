@@ -119,12 +119,7 @@ class PowerMonitorService : Service() {
         serviceScope.launch {
             themePrefsRepo.preferencesFlow.collect { prefs ->
                 autoLaunchAodEnabled = prefs.autoLaunchAodOnPlugIn
-                PowerTelemetryEngine.updateDesignConfig(
-                    gaugeStyle = prefs.gaugeStyle,
-                    floatingPillStyle = prefs.floatingPillStyle,
-                    clockNumberStyle = prefs.clockNumberStyle,
-                    accentSwatch = prefs.accentSwatch,
-                )
+                PowerTelemetryEngine.updateDesignPreferences(prefs)
                 if (PowerTelemetryEngine.isAutoLaunchAodEnabled != prefs.autoLaunchAodOnPlugIn) {
                     PowerTelemetryEngine.setAutoLaunchAodOnPlugIn(prefs.autoLaunchAodOnPlugIn)
                 }
@@ -612,9 +607,38 @@ class PowerMonitorService : Service() {
          *    so the OS reliably brings [ChargingAodActivity] directly above the lockscreen.
          * 3. Also fires direct `startActivity()` when overlay or background pop-up permission is granted.
          */
+        fun isWithinHideSchedule(
+            enabled: Boolean,
+            fromMinutes: Int,
+            untilMinutes: Int,
+        ): Boolean {
+            if (!enabled || fromMinutes == untilMinutes) return false
+            val cal = java.util.Calendar.getInstance()
+            val nowMinutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+            return if (fromMinutes < untilMinutes) {
+                nowMinutes in fromMinutes until untilMinutes
+            } else {
+                // Overnight window (e.g. 22:00 -> 06:00)
+                nowMinutes >= fromMinutes || nowMinutes < untilMinutes
+            }
+        }
+
         @SuppressLint("WakelockTimeout")
-        fun launchChargingAodImmediately(context: Context) {
+        fun launchChargingAodImmediately(
+            context: Context,
+            isManualPreview: Boolean = false,
+        ) {
             val app = context.applicationContext
+            val prefs = PowerTelemetryEngine.designConfig.value.preferences
+            if (!isManualPreview && isWithinHideSchedule(
+                    enabled = prefs.hideOnScheduleEnabled,
+                    fromMinutes = prefs.hideScheduleFromMinutes,
+                    untilMinutes = prefs.hideScheduleUntilMinutes,
+                )
+            ) {
+                return
+            }
+
             ensureChannelsStatic(app)
             PowerTelemetryEngine.pollFreshHardwareSample(recordSample = true)
 
@@ -626,7 +650,8 @@ class PowerMonitorService : Service() {
                         Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
                         Intent.FLAG_ACTIVITY_NO_ANIMATION,
                 )
-                putExtra(ChargingAodActivity.EXTRA_LAUNCHED_FROM_PLUGIN, true)
+                putExtra(ChargingAodActivity.EXTRA_LAUNCHED_FROM_PLUGIN, !isManualPreview)
+                putExtra(ChargingAodActivity.EXTRA_IS_MANUAL_PREVIEW, isManualPreview)
             }
 
             // 1. Always wake the display immediately when power connects while locked or screen is off

@@ -15,6 +15,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -28,10 +29,11 @@ import com.example.data.ThemeMode
 data class AKitDesignTokens(
     val gaugeStyle: GaugeStyle = GaugeStyle.MINIMAL_THIN_ARC,
     val floatingPillStyle: FloatingPillStyle = FloatingPillStyle.COMPACT_SINGLE_LINE,
-    val clockNumberStyle: ClockNumberStyle = ClockNumberStyle.MONTSERRAT_BOLD,
+    val clockNumberStyle: ClockNumberStyle = ClockNumberStyle.EDITORIAL_SERIF,
     val accentSwatch: AccentSwatch = AccentSwatch.ELECTRIC_BLUE,
     val chargingAccent: Color = ElectricBluePrimary,
     val dischargingAccent: Color = CoralPeach,
+    val use24HourTime: Boolean = false,
 )
 
 val LocalAKitDesign = staticCompositionLocalOf { AKitDesignTokens() }
@@ -132,69 +134,57 @@ private fun ColorScheme.withAmoledSurfaces(): ColorScheme = copy(
     outlineVariant = AmoledOutlineVariant,
 )
 
+private fun blendDarkContainer(accent: Color): Color = Color(
+    red = (accent.red * 0.22f + 0.05f).coerceIn(0f, 1f),
+    green = (accent.green * 0.22f + 0.06f).coerceIn(0f, 1f),
+    blue = (accent.blue * 0.22f + 0.07f).coerceIn(0f, 1f),
+    alpha = 1f,
+)
+
+private fun blendLightContainer(accent: Color): Color = Color(
+    red = (accent.red * 0.22f + 0.78f).coerceIn(0f, 1f),
+    green = (accent.green * 0.22f + 0.78f).coerceIn(0f, 1f),
+    blue = (accent.blue * 0.22f + 0.78f).coerceIn(0f, 1f),
+    alpha = 1f,
+)
+
 private fun ColorScheme.withAccentSwatch(swatch: AccentSwatch, darkTheme: Boolean): ColorScheme {
+    if (swatch == AccentSwatch.DYNAMIC_AUTO) return this
+    val rawAccent = Color(swatch.argbInt)
+
     if (!darkTheme) {
-        return when (swatch) {
-            AccentSwatch.DYNAMIC_AUTO -> this
-            AccentSwatch.EMERALD_GREEN -> copy(
-                primary = Color(0xFF127A43),
-                onPrimary = Color.White,
-                primaryContainer = Color(0xFFBBF7D0),
-                onPrimaryContainer = Color(0xFF042613),
-            )
-            AccentSwatch.CYBER_PEACH -> copy(
-                primary = Color(0xFFC2571A),
-                onPrimary = Color.White,
-                primaryContainer = Color(0xFFFFE0C8),
-                onPrimaryContainer = Color(0xFF3B1500),
-            )
-            AccentSwatch.ELECTRIC_BLUE -> copy(
-                primary = Color(0xFF026AA7),
-                onPrimary = Color.White,
-                primaryContainer = Color(0xFFC6EBFF),
-                onPrimaryContainer = Color(0xFF001F33),
-            )
-            AccentSwatch.MONOCHROME -> copy(
-                primary = Color(0xFF2B3137),
-                onPrimary = Color.White,
-                primaryContainer = Color(0xFFDCE1E7),
-                onPrimaryContainer = Color(0xFF111418),
+        val lightPrimary = if (swatch == AccentSwatch.PURE_WHITE) {
+            Color(0xFF2B3137)
+        } else {
+            Color(
+                red = (rawAccent.red * 0.68f).coerceIn(0f, 1f),
+                green = (rawAccent.green * 0.68f).coerceIn(0f, 1f),
+                blue = (rawAccent.blue * 0.68f).coerceIn(0f, 1f),
+                alpha = 1f,
             )
         }
-    }
-    return when (swatch) {
-        AccentSwatch.DYNAMIC_AUTO -> this
-        AccentSwatch.EMERALD_GREEN -> copy(
-            primary = EmeraldSwatchPrimary,
-            onPrimary = Color(0xFF032914),
-            primaryContainer = EmeraldSwatchContainer,
-            onPrimaryContainer = OnEmeraldSwatchContainer,
-            secondary = EmeraldSwatchPrimary,
-            secondaryContainer = EmeraldSwatchContainer,
-            onSecondaryContainer = OnEmeraldSwatchContainer,
-        )
-        AccentSwatch.CYBER_PEACH -> copy(
-            primary = CyberPeachPrimary,
-            onPrimary = Color(0xFF3E1904),
-            primaryContainer = CyberPeachContainer,
-            onPrimaryContainer = OnCyberPeachContainer,
-        )
-        AccentSwatch.ELECTRIC_BLUE -> copy(
-            primary = ElectricBluePrimary,
-            onPrimary = Color(0xFF022638),
-            primaryContainer = ElectricBlueContainer,
-            onPrimaryContainer = OnElectricBlueContainer,
-        )
-        AccentSwatch.MONOCHROME -> copy(
-            primary = MonochromePrimary,
-            onPrimary = Color(0xFF111418),
-            primaryContainer = MonochromeContainer,
-            onPrimaryContainer = OnMonochromeContainer,
-            secondary = Color(0xFFCBD5E1),
-            secondaryContainer = MonochromeContainer,
-            onSecondaryContainer = OnMonochromeContainer,
+        return copy(
+            primary = lightPrimary,
+            onPrimary = Color.White,
+            primaryContainer = blendLightContainer(lightPrimary),
+            onPrimaryContainer = Color(0xFF10151C),
         )
     }
+
+    val onPrimary = if (rawAccent.luminance() > 0.35f) Color(0xFF0A1016) else Color.White
+    val container = if (swatch == AccentSwatch.PURE_WHITE) MonochromeContainer else blendDarkContainer(rawAccent)
+    val onContainer = if (swatch == AccentSwatch.PURE_WHITE) OnMonochromeContainer else Color(
+        red = (rawAccent.red * 0.35f + 0.65f).coerceIn(0f, 1f),
+        green = (rawAccent.green * 0.35f + 0.65f).coerceIn(0f, 1f),
+        blue = (rawAccent.blue * 0.35f + 0.65f).coerceIn(0f, 1f),
+        alpha = 1f,
+    )
+    return copy(
+        primary = rawAccent,
+        onPrimary = onPrimary,
+        primaryContainer = container,
+        onPrimaryContainer = onContainer,
+    )
 }
 
 @Composable
@@ -203,8 +193,9 @@ fun AKitTheme(
     dynamicColor: Boolean = false,
     gaugeStyle: GaugeStyle = GaugeStyle.MINIMAL_THIN_ARC,
     floatingPillStyle: FloatingPillStyle = FloatingPillStyle.COMPACT_SINGLE_LINE,
-    clockNumberStyle: ClockNumberStyle = ClockNumberStyle.MONTSERRAT_BOLD,
+    clockNumberStyle: ClockNumberStyle = ClockNumberStyle.EDITORIAL_SERIF,
     accentSwatch: AccentSwatch = AccentSwatch.ELECTRIC_BLUE,
+    use24HourTime: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -240,16 +231,15 @@ fun AKitTheme(
     val colorScheme = baseScheme.withAccentSwatch(accentSwatch, useDarkTheme)
 
     val chargingAccent = when (accentSwatch) {
-        AccentSwatch.DYNAMIC_AUTO -> if (useDarkTheme) MintEmerald else MintLight
-        AccentSwatch.EMERALD_GREEN -> EmeraldSwatchPrimary
-        AccentSwatch.CYBER_PEACH -> CyberPeachPrimary
-        AccentSwatch.ELECTRIC_BLUE -> ElectricBluePrimary
-        AccentSwatch.MONOCHROME -> colorScheme.primary
+        AccentSwatch.DYNAMIC_AUTO -> if (useSystemDynamic) colorScheme.primary else if (useDarkTheme) MintEmerald else MintLight
+        AccentSwatch.PURE_WHITE -> colorScheme.primary
+        else -> Color(accentSwatch.argbInt)
     }
 
     val dischargingAccent = when (accentSwatch) {
-        AccentSwatch.MONOCHROME -> colorScheme.onSurfaceVariant
-        AccentSwatch.CYBER_PEACH -> CyberPeachPrimary
+        AccentSwatch.PURE_WHITE -> colorScheme.onSurfaceVariant
+        AccentSwatch.CORAL_RED -> Color(AccentSwatch.CORAL_RED.argbInt)
+        AccentSwatch.AMBER -> Color(AccentSwatch.AMBER.argbInt)
         else -> if (useDarkTheme) CoralPeach else PeachLight
     }
 
@@ -260,6 +250,7 @@ fun AKitTheme(
         accentSwatch = accentSwatch,
         chargingAccent = chargingAccent,
         dischargingAccent = dischargingAccent,
+        use24HourTime = use24HourTime,
     )
 
     val view = LocalView.current

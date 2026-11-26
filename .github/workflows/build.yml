@@ -37,8 +37,8 @@ jobs:
 
       - name: Prepare Release APK
         run: |
-          VERSION_NAME=${GITHUB_REF_NAME:-v1.3.0}
-          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.3.0"; fi
+          VERSION_NAME=${GITHUB_REF_NAME:-v1.4.0}
+          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.4.0"; fi
           mkdir -p release-apk
           cp app/build/outputs/apk/debug/app-debug.apk "release-apk/A-Kit-${VERSION_NAME}.apk"
 
@@ -51,14 +51,13 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.0' }}
-          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.0' }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.4.0' }}
+          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.4.0' }}"
           body: |
-            ### A-Kit v1.3.0 — Offline-First Native Utility Suite
-            - **Offline-First & Zero Trackers:** Local hardware utilities with optional direct GitHub Releases update checker.
-            - **Lockscreen Charging AOD (HyperOS & Android 14+):** Instant screen-off wake via WakeLock + FullScreenIntent, pure `#000000` AMOLED black, live 1-second telemetry polling, and accurate 1S/2S wattage math.
-            - **SnapClean:** Persistent background screenshot auto-watcher & cleaner.
-            - **Drop Wi-Fi Share:** High-speed local P2P & offline hotspot file/text sharing with live progress tracking.
+            ### A-Kit v1.4.0 — AmpereFlow-Grade Design Studio & Smoothed Thermal Telemetry
+            - **Smoothed Thermal & Speed Profile:** EMA-filtered rolling window chart with fluid cubic Bezier curves, subtle gradient fills, glowing live tips, and clean MAX/MIN bounds.
+            - **AmpereFlow Design Studio & AOD Engine:** Interactive live AMOLED phone mockup preview, 6 clock styles (including Editorial High-Contrast Serif), 12 custom Canvas speedometer styles, 4 battery details layouts, 10 color swatches + brightness slider, media/notification AOD widgets, and full schedule/dim/burn-in behavior controls.
+            - **SnapClean, Drop Offline Hotspot & GitHub In-App Updater:** Preserved and refined.
           files: release-apk/*.apk
           draft: false
           prerelease: false

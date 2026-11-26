@@ -273,13 +273,35 @@ fun LiveThermalSpeedChartCard(
     modifier: Modifier = Modifier,
 ) {
     var historyExpanded by rememberSaveable { mutableStateOf(false) }
+    val use24HourTime = com.example.ui.theme.LocalAKitDesign.current.use24HourTime
 
     val wattsColor = MaterialTheme.colorScheme.primary
     val tempColor = MaterialTheme.colorScheme.tertiary
-    val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+    val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
 
     val latestSample = samples.lastOrNull()
     val maxTempC = samples.maxOfOrNull { it.tempCelsius } ?: 0f
+
+    // Exponential Moving Average (EMA) smoothing + clean downsampled rolling window (max 48 pts)
+    val smoothedWatts = androidx.compose.runtime.remember(samples) {
+        smoothAndWindowSeries(
+            raw = samples.map { it.watts },
+            maxPoints = 48,
+            emaAlpha = 0.28f,
+        )
+    }
+    val smoothedTempsC = androidx.compose.runtime.remember(samples) {
+        smoothAndWindowSeries(
+            raw = samples.map { it.tempCelsius },
+            maxPoints = 48,
+            emaAlpha = 0.24f,
+        )
+    }
+
+    val maxWattsInWindow = smoothedWatts.maxOrNull() ?: (latestSample?.watts ?: 0f)
+    val minWattsInWindow = smoothedWatts.minOrNull() ?: (latestSample?.watts ?: 0f)
+    val maxTempInWindow = smoothedTempsC.maxOrNull() ?: (latestSample?.tempCelsius ?: 0f)
+    val minTempInWindow = smoothedTempsC.minOrNull() ?: (latestSample?.tempCelsius ?: 0f)
 
     Surface(
         modifier = modifier
@@ -312,7 +334,7 @@ fun LiveThermalSpeedChartCard(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "Real-time wattage (W) & cell temperature (${tempUnit.symbol})",
+                        text = "EMA-smoothed wattage (W) & cell temperature (${tempUnit.symbol})",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -333,7 +355,7 @@ fun LiveThermalSpeedChartCard(
             // Legend Pills
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ChartLegendChip(
@@ -351,105 +373,168 @@ fun LiveThermalSpeedChartCard(
                 )
             }
 
-            // Custom Smooth Dual-Curve Bezier Canvas
+            // Clean Fluid Dual-Curve Bezier Canvas with MAX / MIN corner bounds
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(168.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.6f))
-                    .padding(horizontal = 10.dp, vertical = 12.dp),
+                    .height(176.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.65f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 8f), 0f)
-                    for (i in 0..3) {
-                        val y = size.height * (i / 3f)
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = 18.dp, bottom = 18.dp),
+                ) {
+                    val w = size.width
+                    val h = size.height
+                    if (w <= 4f || h <= 4f) return@Canvas
+
+                    val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f)
+                    listOf(0f, h * 0.5f, h).forEach { y ->
                         drawLine(
                             color = gridColor,
                             start = Offset(0f, y),
-                            end = Offset(size.width, y),
+                            end = Offset(w, y),
                             strokeWidth = 1.dp.toPx(),
                             pathEffect = dash,
                         )
                     }
 
-                    if (samples.size < 2) {
-                        // Draw subtle baseline indicator while first 2 samples arrive
-                        val midY = size.height * 0.55f
+                    if (smoothedWatts.size < 2) {
+                        val midY = h * 0.55f
                         drawLine(
-                            color = wattsColor.copy(alpha = 0.5f),
+                            color = wattsColor.copy(alpha = 0.45f),
                             start = Offset(0f, midY),
-                            end = Offset(size.width, midY),
+                            end = Offset(w, midY),
                             strokeWidth = 2.dp.toPx(),
+                            cap = StrokeCap.Round,
+                        )
+                        drawCircle(
+                            color = wattsColor.copy(alpha = 0.25f),
+                            radius = 7.dp.toPx(),
+                            center = Offset(w, midY),
+                        )
+                        drawCircle(
+                            color = Color.White,
+                            radius = 3.dp.toPx(),
+                            center = Offset(w, midY),
                         )
                         return@Canvas
                     }
 
-                    val maxW = max(5f, (samples.maxOf { it.watts }) * 1.25f)
-                    val minTemp = (samples.minOf { it.tempCelsius } - 4f).coerceAtMost(20f)
-                    val maxTemp = max(minTemp + 10f, samples.maxOf { it.tempCelsius } + 4f)
+                    val padY = h * 0.10f
+                    val usableH = (h - padY * 2f).coerceAtLeast(6f)
 
-                    val stepX = size.width / (samples.size - 1).coerceAtLeast(1)
+                    val wMin = (smoothedWatts.minOrNull() ?: 0f).coerceAtLeast(0f)
+                    val wMax = max(wMin + 2.5f, (smoothedWatts.maxOrNull() ?: 5f) * 1.15f)
+                    val wSpan = max(0.5f, wMax - wMin)
 
-                    val wattPoints = samples.mapIndexed { idx, s ->
-                        val x = idx * stepX
-                        val normY = (s.watts / maxW).coerceIn(0f, 1f)
-                        val y = size.height - (normY * (size.height - 10.dp.toPx())) - 4.dp.toPx()
-                        Offset(x, y)
+                    val tMin = (smoothedTempsC.minOrNull() ?: 25f) - 2.5f
+                    val tMax = max(tMin + 6f, (smoothedTempsC.maxOrNull() ?: 35f) + 2.5f)
+                    val tSpan = max(1f, tMax - tMin)
+
+                    val stepX = w / (smoothedWatts.size - 1).coerceAtLeast(1)
+
+                    val wattPoints = smoothedWatts.mapIndexed { idx, value ->
+                        val normY = ((value - wMin) / wSpan).coerceIn(0f, 1f)
+                        Offset(idx * stepX, (h - padY) - (normY * usableH))
                     }
 
-                    val tempPoints = samples.mapIndexed { idx, s ->
-                        val x = idx * stepX
-                        val normY = ((s.tempCelsius - minTemp) / (maxTemp - minTemp)).coerceIn(0f, 1f)
-                        val y = size.height - (normY * (size.height - 10.dp.toPx())) - 4.dp.toPx()
-                        Offset(x, y)
+                    val tempPoints = smoothedTempsC.mapIndexed { idx, tempVal ->
+                        val normY = ((tempVal - tMin) / tSpan).coerceIn(0f, 1f)
+                        Offset(idx * stepX, (h - padY) - (normY * usableH))
                     }
 
                     val wattLinePath = buildSmoothPath(wattPoints)
                     val wattAreaPath = Path().apply {
                         addPath(wattLinePath)
-                        lineTo(wattPoints.last().x, size.height)
-                        lineTo(wattPoints.first().x, size.height)
+                        lineTo(wattPoints.last().x, h)
+                        lineTo(wattPoints.first().x, h)
                         close()
                     }
 
-                    // Gradient area under Wattage curve
+                    // Subtle vertical gradient fill (0.18 -> 0.0) under primary Power curve
                     drawPath(
                         path = wattAreaPath,
                         brush = Brush.verticalGradient(
-                            colors = listOf(wattsColor.copy(alpha = 0.28f), Color.Transparent),
+                            colors = listOf(wattsColor.copy(alpha = 0.18f), Color.Transparent),
                             startY = 0f,
-                            endY = size.height,
+                            endY = h,
                         ),
                     )
 
-                    // Wattage curve stroke
-                    drawPath(
-                        path = wattLinePath,
-                        color = wattsColor,
-                        style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round),
-                    )
-
-                    // Temperature smooth curve stroke
+                    // Fluid 2.dp cubic Bezier curve for Cell Temperature (°C)
                     val tempPath = buildSmoothPath(tempPoints)
                     drawPath(
                         path = tempPath,
-                        color = tempColor,
+                        color = tempColor.copy(alpha = 0.85f),
                         style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
                     )
 
-                    // Live tip indicator dots
-                    drawCircle(
+                    // Fluid 2.dp cubic Bezier curve for Power (W)
+                    drawPath(
+                        path = wattLinePath,
                         color = wattsColor,
-                        radius = 4.dp.toPx(),
-                        center = wattPoints.last(),
+                        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+                    )
+
+                    // Secondary live temperature endpoint dot
+                    val lastTempPt = tempPoints.last()
+                    drawCircle(
+                        color = tempColor.copy(alpha = 0.25f),
+                        radius = 5.5.dp.toPx(),
+                        center = lastTempPt,
                     )
                     drawCircle(
                         color = tempColor,
-                        radius = 3.5.dp.toPx(),
-                        center = tempPoints.last(),
+                        radius = 2.8.dp.toPx(),
+                        center = lastTempPt,
+                    )
+
+                    // Primary live glowing tip indicator at latest Power point
+                    val lastWattPt = wattPoints.last()
+                    drawCircle(
+                        color = wattsColor.copy(alpha = 0.28f),
+                        radius = 7.5.dp.toPx(),
+                        center = lastWattPt,
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = 3.2.dp.toPx(),
+                        center = lastWattPt,
                     )
                 }
+
+                // Subtle MAX & MIN corner bounds matching Power Source Trend polish
+                Text(
+                    text = String.format(
+                        Locale.US,
+                        "MAX %.1fW • %s",
+                        maxWattsInWindow,
+                        tempUnit.format(maxTempInWindow),
+                    ),
+                    style = MonoLabelStyle.copy(fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp)),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.align(Alignment.TopEnd),
+                )
+
+                Text(
+                    text = String.format(
+                        Locale.US,
+                        "MIN %.1fW • %s",
+                        minWattsInWindow,
+                        tempUnit.format(minTempInWindow),
+                    ),
+                    style = MonoLabelStyle.copy(fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp)),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                )
             }
 
             // Local Session History Toggle Row
@@ -516,7 +601,11 @@ fun LiveThermalSpeedChartCard(
                         )
                     } else {
                         sessionHistory.take(5).forEach { record ->
-                            SessionHistoryRow(record = record, tempUnit = tempUnit)
+                            SessionHistoryRow(
+                                record = record,
+                                tempUnit = tempUnit,
+                                use24HourTime = use24HourTime,
+                            )
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -558,8 +647,10 @@ fun LiveThermalSpeedChartCard(
 private fun SessionHistoryRow(
     record: ChargingSessionRecord,
     tempUnit: TempUnit,
+    use24HourTime: Boolean,
 ) {
-    val timeLabel = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(record.endedAtMs))
+    val pattern = if (use24HourTime) "MMM d, HH:mm" else "MMM d, h:mm a"
+    val timeLabel = SimpleDateFormat(pattern, Locale.getDefault()).format(Date(record.endedAtMs))
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f),
@@ -619,6 +710,43 @@ private fun ChartLegendChip(
             style = MonoLabelStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * Applies an Exponential Moving Average (EMA) low-pass filter and bucket-averages into a
+ * clean rolling window of at most [maxPoints] samples so raw 1-second hardware micro-spikes
+ * render as fluid, jitter-free cubic Bezier curves.
+ */
+private fun smoothAndWindowSeries(
+    raw: List<Float>,
+    maxPoints: Int,
+    emaAlpha: Float,
+): List<Float> {
+    if (raw.isEmpty()) return emptyList()
+    if (raw.size == 1) return raw
+
+    // 1. Exponential Moving Average pass
+    val ema = ArrayList<Float>(raw.size)
+    var current = raw.first()
+    ema.add(current)
+    for (i in 1 until raw.size) {
+        current = emaAlpha * raw[i] + (1f - emaAlpha) * current
+        ema.add(current)
+    }
+
+    // 2. Bucket-average downsampling if exceeding rolling window cap
+    if (ema.size <= maxPoints) return ema
+
+    val bucketSize = ema.size.toFloat() / maxPoints
+    return List(maxPoints) { idx ->
+        val start = (idx * bucketSize).toInt().coerceIn(0, ema.lastIndex)
+        val end = (((idx + 1) * bucketSize).toInt()).coerceIn(start + 1, ema.size)
+        var sum = 0f
+        for (j in start until end) {
+            sum += ema[j]
+        }
+        sum / (end - start)
     }
 }
 

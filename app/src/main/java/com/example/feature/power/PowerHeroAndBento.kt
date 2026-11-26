@@ -55,21 +55,19 @@ import androidx.compose.ui.unit.sp
 import com.example.data.ClockNumberStyle
 import com.example.data.FloatingPillStyle
 import com.example.data.GaugeStyle
+import com.example.feature.aod.AodSpeedometerGauge
 import com.example.ui.theme.MonoLabelStyle
 import com.example.ui.theme.MontserratAlternatesFontFamily
-import com.example.ui.theme.RobotoCondensedFontFamily
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Large 270-degree Arc Gauge inspired by AmpereFlow / Material You.
- * Supports all 3 Design Studio GaugeStyles, ClockNumberStyles, and dynamic charging/discharging colors.
+ * Large Hero Power Gauge supporting all 12 Design Studio [GaugeStyle]s, all 6 [ClockNumberStyle]s,
+ * and dynamic charging/discharging colors.
  */
 @Composable
 fun PowerHeroArcGauge(
@@ -82,340 +80,34 @@ fun PowerHeroArcGauge(
     gaugeStyle: GaugeStyle,
     clockNumberStyle: ClockNumberStyle,
     modifier: Modifier = Modifier,
+    wattage: Float = 0f,
+    currentNowMa: Int = 0,
     gaugeSize: Dp = 236.dp,
     compactMode: Boolean = false,
 ) {
-    val animatedProgress by animateFloatAsState(
-        targetValue = (levelPercent / 100f).coerceIn(0.01f, 1f),
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessLow,
-        ),
-        label = "power_arc_gauge_progress",
-    )
-
-    val animatedAccent by animateColorAsState(
-        targetValue = accentColor,
-        animationSpec = tween(durationMillis = 360),
-        label = "power_arc_gauge_accent",
-    )
-
-    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
-
-    val numberFontFamily = when (clockNumberStyle) {
-        ClockNumberStyle.MONTSERRAT_BOLD -> MontserratAlternatesFontFamily
-        ClockNumberStyle.CONDENSED_TECH -> RobotoCondensedFontFamily
-        ClockNumberStyle.OUTLINE_DIGITAL -> MontserratAlternatesFontFamily
-    }
-    val numberFontWeight = when (clockNumberStyle) {
-        ClockNumberStyle.MONTSERRAT_BOLD -> FontWeight.ExtraBold
-        ClockNumberStyle.CONDENSED_TECH -> FontWeight.Bold
-        ClockNumberStyle.OUTLINE_DIGITAL -> FontWeight.Medium
-    }
-    val numberLetterSpacing = when (clockNumberStyle) {
-        ClockNumberStyle.MONTSERRAT_BOLD -> (-1.5).sp
-        ClockNumberStyle.CONDENSED_TECH -> (-0.5).sp
-        ClockNumberStyle.OUTLINE_DIGITAL -> 2.5.sp
-    }
-
-    val displayPercentInt = levelPercent.roundToInt().coerceIn(0, 100)
-    val displayDecimal = String.format(Locale.US, "%.2f%%", levelPercent)
-
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(if (compactMode) 6.dp else 10.dp),
     ) {
-        Box(
-            modifier = Modifier.size(gaugeSize),
-            contentAlignment = Alignment.Center,
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val startAngle = 135f
-                val totalSweep = 270f
-                val activeSweep = totalSweep * animatedProgress
-                val center = Offset(size.width / 2f, size.height / 2f)
-
-                when (gaugeStyle) {
-                    GaugeStyle.MINIMAL_THIN_ARC -> {
-                        val strokePx = if (compactMode) 6.dp.toPx() else 9.dp.toPx()
-                        val inset = strokePx + 6.dp.toPx()
-                        val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
-                        val topLeft = Offset(inset, inset)
-
-                        // Soft track arc
-                        drawArc(
-                            color = trackColor,
-                            startAngle = startAngle,
-                            sweepAngle = totalSweep,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                        )
-
-                        // Subtle glow halo behind active arc
-                        drawArc(
-                            color = animatedAccent.copy(alpha = 0.16f),
-                            startAngle = startAngle,
-                            sweepAngle = activeSweep,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokePx * 2.1f, cap = StrokeCap.Round),
-                        )
-
-                        // Crisp active progress arc
-                        drawArc(
-                            color = animatedAccent,
-                            startAngle = startAngle,
-                            sweepAngle = activeSweep,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                        )
-
-                        // Leading luminous tip dot
-                        val tipAngleRad = (startAngle + activeSweep) * PI / 180.0
-                        val radius = arcSize.width / 2f
-                        val tipCenter = Offset(
-                            center.x + (radius * cos(tipAngleRad)).toFloat(),
-                            center.y + (radius * sin(tipAngleRad)).toFloat(),
-                        )
-                        drawCircle(
-                            color = Color.White,
-                            radius = strokePx * 0.42f,
-                            center = tipCenter,
-                        )
-                    }
-
-                    GaugeStyle.THICK_RING -> {
-                        val strokePx = if (compactMode) 12.dp.toPx() else 18.dp.toPx()
-                        val inset = strokePx / 2f + 6.dp.toPx()
-                        val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
-                        val topLeft = Offset(inset, inset)
-
-                        drawArc(
-                            color = trackColor,
-                            startAngle = startAngle,
-                            sweepAngle = totalSweep,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                        )
-
-                        drawArc(
-                            brush = Brush.sweepGradient(
-                                0.0f to animatedAccent.copy(alpha = 0.72f),
-                                0.55f to animatedAccent,
-                                1.0f to animatedAccent.copy(alpha = 0.9f),
-                                center = center,
-                            ),
-                            startAngle = startAngle,
-                            sweepAngle = activeSweep,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                        )
-
-                        // Inner delicate hairline accent ring
-                        drawArc(
-                            color = animatedAccent.copy(alpha = 0.25f),
-                            startAngle = startAngle,
-                            sweepAngle = totalSweep,
-                            useCenter = false,
-                            topLeft = Offset(inset + strokePx * 0.85f, inset + strokePx * 0.85f),
-                            size = Size(
-                                (arcSize.width - strokePx * 1.7f).coerceAtLeast(1f),
-                                (arcSize.height - strokePx * 1.7f).coerceAtLeast(1f),
-                            ),
-                            style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round),
-                        )
-                    }
-
-                    GaugeStyle.SEGMENTED_TICK -> {
-                        val tickCount = if (compactMode) 30 else 44
-                        val activeTicks = (animatedProgress * tickCount).roundToInt().coerceIn(0, tickCount)
-                        val outerRadius = size.minDimension / 2f - 4.dp.toPx()
-                        val tickLen = if (compactMode) 9.dp.toPx() else 14.dp.toPx()
-                        val innerRadius = outerRadius - tickLen
-
-                        for (i in 0 until tickCount) {
-                            val fraction = i.toFloat() / (tickCount - 1).coerceAtLeast(1)
-                            val angleDeg = startAngle + (totalSweep * fraction)
-                            val rad = angleDeg * PI / 180.0
-                            val isFilled = i < activeTicks
-                            val isLead = i == activeTicks - 1 && activeTicks > 0
-
-                            val start = Offset(
-                                center.x + (innerRadius * cos(rad)).toFloat(),
-                                center.y + (innerRadius * sin(rad)).toFloat(),
-                            )
-                            val end = Offset(
-                                center.x + (outerRadius * cos(rad)).toFloat(),
-                                center.y + (outerRadius * sin(rad)).toFloat(),
-                            )
-
-                            drawLine(
-                                color = when {
-                                    isLead -> Color.White
-                                    isFilled -> animatedAccent.copy(alpha = 0.55f + 0.45f * fraction)
-                                    else -> trackColor
-                                },
-                                start = start,
-                                end = end,
-                                strokeWidth = if (isLead) {
-                                    if (compactMode) 3.dp.toPx() else 4.dp.toPx()
-                                } else {
-                                    if (compactMode) 2.2.dp.toPx() else 3.dp.toPx()
-                                },
-                                cap = StrokeCap.Round,
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Center live battery readout + dynamic status label
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    Text(
-                        text = "$displayPercentInt",
-                        style = TextStyle(
-                            fontFamily = numberFontFamily,
-                            fontWeight = numberFontWeight,
-                            fontSize = if (compactMode) 34.sp else 54.sp,
-                            letterSpacing = numberLetterSpacing,
-                        ),
-                        color = if (clockNumberStyle == ClockNumberStyle.OUTLINE_DIGITAL) {
-                            animatedAccent
-                        } else {
-                            onSurface
-                        },
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.testTag("power_hero_percent_text"),
-                    )
-                    Text(
-                        text = "%",
-                        style = TextStyle(
-                            fontFamily = numberFontFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = if (compactMode) 16.sp else 22.sp,
-                        ),
-                        color = animatedAccent,
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.padding(bottom = if (compactMode) 5.dp else 9.dp),
-                    )
-                }
-
-                if (!compactMode) {
-                    Text(
-                        text = displayDecimal,
-                        style = MonoLabelStyle.copy(fontSize = 11.sp),
-                        color = onSurfaceVariant,
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.testTag("power_decimal_percent_text"),
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
-
-                Surface(
-                    shape = CircleShape,
-                    color = animatedAccent.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, animatedAccent.copy(alpha = 0.35f)),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(
-                            horizontal = if (compactMode) 8.dp else 10.dp,
-                            vertical = if (compactMode) 2.dp else 3.dp,
-                        ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        if (isCharging) {
-                            Icon(
-                                imageVector = Icons.Rounded.Bolt,
-                                contentDescription = null,
-                                tint = animatedAccent,
-                                modifier = Modifier.size(if (compactMode) 11.dp else 13.dp),
-                            )
-                        }
-                        Text(
-                            text = statusText.uppercase(Locale.US),
-                            style = MonoLabelStyle.copy(
-                                fontSize = if (compactMode) 9.5.sp else 11.sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                            color = animatedAccent,
-                            maxLines = 1,
-                            softWrap = false,
-                        )
-                    }
-                }
-            }
-
-            // Bottom opening of the 270-degree arc: Live Power Pill Badge (+18.5W / -1409 mW)
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, animatedAccent.copy(alpha = 0.45f)),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = if (compactMode) 2.dp else 6.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(
-                        horizontal = if (compactMode) 10.dp else 14.dp,
-                        vertical = if (compactMode) 4.dp else 6.dp,
-                    ),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = powerBadgeText,
-                        style = TextStyle(
-                            fontFamily = MontserratAlternatesFontFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = if (compactMode) 12.sp else 15.sp,
-                        ),
-                        color = animatedAccent,
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.testTag("power_live_wattage_text"),
-                    )
-                    if (!estimateText.isNullOrBlank() && !compactMode) {
-                        Text(
-                            text = "•",
-                            style = MonoLabelStyle,
-                            color = onSurfaceVariant,
-                        )
-                        Text(
-                            text = estimateText,
-                            style = MonoLabelStyle.copy(fontSize = 11.5.sp),
-                            color = onSurface,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.testTag("power_estimate_time_badge"),
-                        )
-                    }
-                }
-            }
-        }
+        AodSpeedometerGauge(
+            levelPercent = levelPercent,
+            wattage = wattage,
+            currentNowMa = currentNowMa,
+            isCharging = isCharging,
+            gaugeStyle = gaugeStyle,
+            clockNumberStyle = clockNumberStyle,
+            accentColor = accentColor,
+            gaugeSize = gaugeSize,
+            compactMode = compactMode,
+            amoledMode = false,
+            brightnessAlpha = 1.0f,
+            percentagePrimaryDisplay = true,
+            showWattsInsteadOfMa = true,
+            statusBadgeText = statusText,
+            bottomPillText = powerBadgeText,
+            estimateText = estimateText,
+        )
     }
 }
 

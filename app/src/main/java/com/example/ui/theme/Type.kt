@@ -23,6 +23,27 @@ val RobotoCondensedFontFamily = FontFamily(
     Font(R.font.roboto_condensed, FontWeight.Bold),
 )
 
+val BodoniModaFontFamily = FontFamily(
+    Font(R.font.bodoni_moda, FontWeight.Normal),
+    Font(R.font.bodoni_moda, FontWeight.Medium),
+    Font(R.font.bodoni_moda, FontWeight.SemiBold),
+    Font(R.font.bodoni_moda, FontWeight.Bold),
+    Font(R.font.bodoni_moda, FontWeight.ExtraBold),
+)
+
+val StardosStencilFontFamily = FontFamily(
+    Font(R.font.stardos_stencil, FontWeight.Normal),
+    Font(R.font.stardos_stencil, FontWeight.Bold),
+)
+
+val JostFontFamily = FontFamily(
+    Font(R.font.jost, FontWeight.Thin),
+    Font(R.font.jost, FontWeight.ExtraLight),
+    Font(R.font.jost, FontWeight.Light),
+    Font(R.font.jost, FontWeight.Normal),
+    Font(R.font.jost, FontWeight.Medium),
+)
+
 // Compatibility aliases mapped cleanly to our new font pairing
 val SpaceGroteskFontFamily = MontserratAlternatesFontFamily
 val PlusJakartaSansFontFamily = RobotoCondensedFontFamily

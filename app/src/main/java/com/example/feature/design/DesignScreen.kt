@@ -1,15 +1,8 @@
 package com.example.feature.design
 
-import android.app.NotificationManager
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,101 +27,117 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Brightness6
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.Layers
-import androidx.compose.material.icons.rounded.NotificationsActive
-import androidx.compose.material.icons.rounded.OpenInNew
-import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Security
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.rounded.FlashlightOff
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AccentSwatch
 import com.example.data.AppPreferences
+import com.example.data.BatteryDetailsCardStyle
 import com.example.data.ClockNumberStyle
 import com.example.data.FloatingPillStyle
 import com.example.data.GaugeStyle
+import com.example.feature.aod.AodBatteryDetailsRow
+import com.example.feature.aod.AodClockDisplay
+import com.example.feature.aod.AodMediaControlsBar
+import com.example.feature.aod.AodMediaSnapshot
+import com.example.feature.aod.AodNotificationBadge
+import com.example.feature.aod.AodNotificationBridgeService
+import com.example.feature.aod.AodNotificationIconsRow
+import com.example.feature.aod.AodSpeedometerGauge
+import com.example.feature.aod.MiniGaugeStyleThumbnail
+import com.example.feature.aod.ResolvedAodMetric
+import com.example.feature.aod.buildClockTextStyle
+import com.example.feature.aod.formatAodDate
+import com.example.feature.aod.formatClockTime
+import com.example.feature.aod.resolveAodMetrics
 import com.example.feature.power.FloatingPillStylePreview
-import com.example.feature.power.PowerHeroArcGauge
+import com.example.feature.power.PowerMonitorService
+import com.example.feature.power.PowerTelemetryEngine
+import com.example.feature.power.PowerTelemetryState
 import com.example.feature.power.PowerViewModel
-import com.example.feature.power.formatDynamicPowerBadge
 import com.example.ui.components.SectionHeader
-import com.example.ui.theme.CyberPeachPrimary
-import com.example.ui.theme.ElectricBluePrimary
-import com.example.ui.theme.EmeraldSwatchPrimary
 import com.example.ui.theme.LocalAKitDesign
-import com.example.ui.theme.MintEmerald
 import com.example.ui.theme.MonoLabelStyle
-import com.example.ui.theme.MonochromePrimary
 import com.example.ui.theme.MontserratAlternatesFontFamily
-import com.example.ui.theme.RobotoCondensedFontFamily
+import kotlinx.coroutines.delay
+import java.util.Date
 import java.util.Locale
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun DesignScreen(
     preferences: AppPreferences,
     powerViewModel: PowerViewModel,
-    onSelectGaugeStyle: (GaugeStyle) -> Unit,
-    onSelectFloatingPillStyle: (FloatingPillStyle) -> Unit,
-    onSelectClockNumberStyle: (ClockNumberStyle) -> Unit,
-    onSelectAccentSwatch: (AccentSwatch) -> Unit,
+    onUpdatePreferences: ((AppPreferences) -> AppPreferences) -> Unit,
     onToggleAutoLaunchCharging: (Boolean) -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val powerState by powerViewModel.uiState.collectAsStateWithLifecycle()
+    val mediaSnapshot by AodNotificationBridgeService.mediaSnapshot.collectAsStateWithLifecycle()
+    val activeNotifications by AodNotificationBridgeService.notifications.collectAsStateWithLifecycle()
     val design = LocalAKitDesign.current
 
-    val previewPercent = if (powerState.hasLiveReading) powerState.exactLevelPercent else 68f
-    val previewCharging = if (powerState.hasLiveReading) powerState.isCharging else true
-    val previewWatts = if (powerState.hasLiveReading) powerState.wattage else 18.5f
-    val previewCurrentMa = if (powerState.hasLiveReading) powerState.currentNowMa else 3850
-    val previewTemp = if (powerState.hasLiveReading) {
-        powerState.settings.tempUnit.format(powerState.temperatureCelsius)
-    } else {
-        "34.2°C"
+    val previewAccent by animateColorAsState(
+        targetValue = when (preferences.accentSwatch) {
+            AccentSwatch.DYNAMIC_AUTO -> if (powerState.isCharging) design.chargingAccent else design.dischargingAccent
+            else -> Color(preferences.accentSwatch.argbInt)
+        },
+        animationSpec = tween(280),
+        label = "design_studio_accent",
+    )
+
+    var nowDate by remember { mutableStateOf(Date()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            nowDate = Date()
+            delay(15_000L)
+        }
     }
 
-    val previewAccent by animateColorAsState(
-        targetValue = if (previewCharging) design.chargingAccent else design.dischargingAccent,
-        animationSpec = tween(320),
-        label = "design_live_preview_accent",
-    )
+    val previewTimeText = remember(nowDate, preferences.use24HourTime) {
+        formatClockTime(preferences.use24HourTime, nowDate)
+    }
+    val previewDateText = remember(nowDate, preferences.dateFormatOption) {
+        formatAodDate(preferences.dateFormatOption, nowDate)
+    }
+    val resolvedMetrics = remember(preferences.aodSelectedMetrics, powerState) {
+        resolveAodMetrics(preferences.aodSelectedMetrics, powerState)
+    }
 
     LazyColumn(
         modifier = modifier
@@ -138,181 +147,135 @@ fun DesignScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // 1. Live Interactive Preview Box at the top
-        item(key = "design_live_preview") {
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, previewAccent.copy(alpha = 0.45f)),
+        // 1. Interactive Live Phone Mockup Preview (Pure AMOLED #000000 Bezel) + Action Bar
+        item(key = "design_phone_mockup") {
+            Column(
                 modifier = Modifier
                     .widthIn(max = 640.dp)
-                    .fillMaxWidth()
-                    .testTag("design_live_preview_box"),
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 12.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Palette,
-                                contentDescription = null,
-                                tint = previewAccent,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                text = "Design Studio Preview",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Surface(
-                            shape = CircleShape,
-                            color = previewAccent.copy(alpha = 0.16f),
-                        ) {
-                            Text(
-                                text = "LIVE SYNC",
-                                style = MonoLabelStyle,
-                                color = previewAccent,
-                                maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-                            )
-                        }
-                    }
+                LivePhoneMockupPreview(
+                    preferences = preferences,
+                    powerState = powerState,
+                    accentColor = previewAccent,
+                    timeText = previewTimeText,
+                    dateText = previewDateText,
+                    metrics = resolvedMetrics,
+                    media = mediaSnapshot,
+                    notifications = activeNotifications,
+                )
 
-                    // Live Miniature Gauge + Floating Pill side-by-side preview stage
-                    Surface(
-                        shape = RoundedCornerShape(22.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 16.dp, horizontal = 14.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            // Live Floating Overlay Pill preview at top of stage
-                            FloatingPillStylePreview(
-                                style = preferences.floatingPillStyle,
-                                accentColor = previewAccent,
-                                wattsText = String.format(Locale.US, "%.1fW", previewWatts),
-                                currentText = "${if (previewCurrentMa >= 0) "+" else ""}${previewCurrentMa}mA",
-                                tempText = previewTemp,
-                                percentText = "${previewPercent.toInt()}%",
-                            )
-
-                            // Live 270° Arc Gauge honoring GaugeStyle + ClockNumberStyle + AccentSwatch
-                            PowerHeroArcGauge(
-                                levelPercent = previewPercent,
-                                isCharging = previewCharging,
-                                statusText = if (previewCharging) "CHARGING" else "DISCHARGING",
-                                powerBadgeText = formatDynamicPowerBadge(previewCharging, previewWatts),
-                                estimateText = null,
-                                accentColor = previewAccent,
-                                gaugeStyle = preferences.gaugeStyle,
-                                clockNumberStyle = preferences.clockNumberStyle,
-                                gaugeSize = 156.dp,
-                                compactMode = true,
-                            )
-
-                            Text(
-                                text = "${preferences.gaugeStyle.label}  •  ${preferences.clockNumberStyle.label}  •  ${preferences.accentSwatch.label}",
-                                style = MonoLabelStyle.copy(fontSize = 10.5.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Trigger Switch Card
-        item(key = "design_trigger_switch") {
-            Surface(
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier
-                    .widthIn(max = 640.dp)
-                    .fillMaxWidth()
-                    .testTag("design_trigger_switch_card"),
-            ) {
+                // Action Bar: Preview Full-Screen AOD Button + Always On Display Activation Card
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    val darkTextOnAccent = preferences.accentSwatch == AccentSwatch.PURE_WHITE ||
+                        preferences.accentSwatch == AccentSwatch.LIME ||
+                        preferences.accentSwatch == AccentSwatch.AMBER ||
+                        preferences.accentSwatch == AccentSwatch.ELECTRIC_BLUE ||
+                        preferences.accentSwatch == AccentSwatch.CYAN ||
+                        preferences.accentSwatch == AccentSwatch.MINT ||
+                        preferences.accentSwatch == AccentSwatch.DYNAMIC_AUTO
+
+                    Button(
+                        onClick = {
+                            PowerTelemetryEngine.updateDesignPreferences(preferences)
+                            PowerMonitorService.launchChargingAodImmediately(
+                                context = context,
+                                isManualPreview = true,
+                            )
+                        },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = previewAccent,
+                            contentColor = if (darkTextOnAccent) Color(0xFF070C10) else Color.White,
+                        ),
+                        modifier = Modifier
+                            .height(54.dp)
+                            .testTag("design_launch_preview_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Visibility,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Preview",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (preferences.autoLaunchAodOnPlugIn) {
+                                previewAccent.copy(alpha = 0.55f)
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant
+                            },
+                        ),
                         modifier = Modifier
                             .weight(1f)
-                            .padding(end = 12.dp),
+                            .testTag("design_trigger_switch_card"),
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
-                            Box(
-                                modifier = Modifier.size(40.dp),
-                                contentAlignment = Alignment.Center,
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 6.dp),
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Bedtime,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(20.dp),
+                                    tint = previewAccent,
+                                    modifier = Modifier.size(18.dp),
                                 )
+                                Column {
+                                    Text(
+                                        text = "Always On Display",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = "Show when locked & charging",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
-                        }
-                        Column {
-                            Text(
-                                text = "Show Floating Pill / Charging Screen",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = "Automatically display when locked & charging",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            Switch(
+                                checked = preferences.autoLaunchAodOnPlugIn,
+                                onCheckedChange = onToggleAutoLaunchCharging,
+                                modifier = Modifier.testTag("design_auto_charging_switch"),
                             )
                         }
                     }
-
-                    Switch(
-                        checked = preferences.autoLaunchAodOnPlugIn,
-                        onCheckedChange = onToggleAutoLaunchCharging,
-                        modifier = Modifier.testTag("design_auto_charging_switch"),
-                    )
                 }
             }
         }
 
-        // 2b. 1-Tap Lockscreen & HyperOS Background Pop-up Permission Helper
+        // 2. Lockscreen Wake & HyperOS Background Pop-up Permissions Helper
         item(key = "design_lockscreen_permission_helper") {
             LockscreenLaunchPermissionsCard(
                 accentColor = previewAccent,
@@ -322,209 +285,16 @@ fun DesignScreen(
             )
         }
 
-        // 3. Accent Color Swatches Row
-        item(key = "design_swatches_header") {
+        // 3. Clock Style Picker (6 Styles: Off + 5 distinct typography styles)
+        item(key = "design_clock_header") {
             SectionHeader(
-                title = "Accent Color Swatch",
-                badgeText = preferences.accentSwatch.label.uppercase(Locale.US),
+                title = "Clock Style",
+                badgeText = "6 STYLES",
                 modifier = Modifier.widthIn(max = 640.dp),
             )
         }
 
-        item(key = "design_swatches_row") {
-            Surface(
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier
-                    .widthIn(max = 640.dp)
-                    .fillMaxWidth(),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AccentSwatch.entries.forEach { swatch ->
-                        val isSelected = preferences.accentSwatch == swatch
-                        val swatchColor = swatchDisplayColor(swatch)
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
-                                .clickable { onSelectAccentSwatch(swatch) }
-                                .padding(horizontal = 4.dp, vertical = 4.dp)
-                                .testTag("swatch_${swatch.storageKey}"),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(46.dp)
-                                    .clip(CircleShape)
-                                    .border(
-                                        width = if (isSelected) 2.5.dp else 1.dp,
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.onSurface
-                                        } else {
-                                            MaterialTheme.colorScheme.outlineVariant
-                                        },
-                                        shape = CircleShape,
-                                    )
-                                    .padding(4.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (swatch == AccentSwatch.DYNAMIC_AUTO) {
-                                            Brush.sweepGradient(
-                                                listOf(
-                                                    MintEmerald,
-                                                    ElectricBluePrimary,
-                                                    CyberPeachPrimary,
-                                                    MintEmerald,
-                                                ),
-                                            )
-                                        } else {
-                                            Brush.linearGradient(listOf(swatchColor, swatchColor))
-                                        },
-                                    ),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (isSelected) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Check,
-                                        contentDescription = "Selected ${swatch.label}",
-                                        tint = Color(0xFF0A100A),
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                } else if (swatch == AccentSwatch.DYNAMIC_AUTO) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AutoAwesome,
-                                        contentDescription = swatch.label,
-                                        tint = Color(0xFF0A100A),
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                }
-                            }
-                            Text(
-                                text = when (swatch) {
-                                    AccentSwatch.DYNAMIC_AUTO -> "Auto"
-                                    AccentSwatch.EMERALD_GREEN -> "Emerald"
-                                    AccentSwatch.CYBER_PEACH -> "Peach"
-                                    AccentSwatch.ELECTRIC_BLUE -> "Blue"
-                                    AccentSwatch.MONOCHROME -> "Mono"
-                                },
-                                style = MonoLabelStyle.copy(
-                                    fontSize = 10.5.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                ),
-                                color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onSurface
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                maxLines = 1,
-                                softWrap = false,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 4. Gauge / Speedometer Style Horizontal Picker
-        item(key = "design_gauge_picker_header") {
-            SectionHeader(
-                title = "Gauge / Speedometer Style",
-                badgeText = "3 STYLES",
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
-        }
-
-        item(key = "design_gauge_picker_row") {
-            LazyRow(
-                modifier = Modifier
-                    .widthIn(max = 640.dp)
-                    .fillMaxWidth()
-                    .testTag("design_gauge_picker_row"),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(GaugeStyle.entries, key = { it.storageKey }) { style ->
-                    val selected = preferences.gaugeStyle == style
-                    VisualStylePickerCard(
-                        title = style.label,
-                        subtitle = style.subtitle,
-                        selected = selected,
-                        accentColor = previewAccent,
-                        onClick = { onSelectGaugeStyle(style) },
-                        testTagName = "gauge_style_${style.storageKey}",
-                    ) {
-                        MiniGaugeThumbnail(
-                            style = style,
-                            accentColor = previewAccent,
-                        )
-                    }
-                }
-            }
-        }
-
-        // 5. Floating Overlay Pill Style Horizontal Picker
-        item(key = "design_pill_picker_header") {
-            SectionHeader(
-                title = "Floating Overlay Pill Style",
-                badgeText = "LIVE HUD",
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
-        }
-
-        item(key = "design_pill_picker_row") {
-            LazyRow(
-                modifier = Modifier
-                    .widthIn(max = 640.dp)
-                    .fillMaxWidth()
-                    .testTag("design_pill_picker_row"),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(FloatingPillStyle.entries, key = { it.storageKey }) { style ->
-                    val selected = preferences.floatingPillStyle == style
-                    VisualStylePickerCard(
-                        title = style.label,
-                        subtitle = style.subtitle,
-                        selected = selected,
-                        accentColor = previewAccent,
-                        onClick = { onSelectFloatingPillStyle(style) },
-                        testTagName = "pill_style_${style.storageKey}",
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(68.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            FloatingPillStylePreview(
-                                style = style,
-                                accentColor = previewAccent,
-                                wattsText = "18.5W",
-                                currentText = "+3.8A",
-                                tempText = "34°C",
-                                percentText = "68%",
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 6. Clock / Number Style Horizontal Picker
-        item(key = "design_clock_picker_header") {
-            SectionHeader(
-                title = "Clock / Number Style",
-                badgeText = "GAUGE & AOD",
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
-        }
-
-        item(key = "design_clock_picker_row") {
+        item(key = "design_clock_row") {
             LazyRow(
                 modifier = Modifier
                     .widthIn(max = 640.dp)
@@ -539,14 +309,564 @@ fun DesignScreen(
                         subtitle = style.subtitle,
                         selected = selected,
                         accentColor = previewAccent,
-                        onClick = { onSelectClockNumberStyle(style) },
+                        onClick = { onUpdatePreferences { it.copy(clockNumberStyle = style) } },
                         testTagName = "clock_style_${style.storageKey}",
                     ) {
-                        MiniClockNumberThumbnail(
+                        MiniClockStyleThumbnail(
                             style = style,
                             accentColor = previewAccent,
                         )
                     }
+                }
+            }
+        }
+
+        // 4. Speedometer / Gauge Style Picker (12 Custom Canvas Styles)
+        item(key = "design_gauge_header") {
+            SectionHeader(
+                title = "Speedometer & Gauge Style",
+                badgeText = "12 STYLES",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
+        }
+
+        item(key = "design_gauge_row") {
+            LazyRow(
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth()
+                    .testTag("design_gauge_picker_row"),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(GaugeStyle.entries, key = { it.storageKey }) { style ->
+                    val selected = preferences.gaugeStyle == style
+                    VisualStylePickerCard(
+                        title = style.label,
+                        subtitle = style.subtitle,
+                        selected = selected,
+                        accentColor = previewAccent,
+                        onClick = { onUpdatePreferences { it.copy(gaugeStyle = style) } },
+                        testTagName = "gauge_style_${style.storageKey}",
+                    ) {
+                        MiniGaugeStyleThumbnail(
+                            style = style,
+                            accentColor = previewAccent,
+                        )
+                    }
+                }
+            }
+        }
+
+        // 5. Battery Details Card Style Picker (4 Layouts)
+        item(key = "design_details_style_header") {
+            SectionHeader(
+                title = "Battery Details Style",
+                badgeText = "4 LAYOUTS",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
+        }
+
+        item(key = "design_details_style_row") {
+            LazyRow(
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth()
+                    .testTag("design_details_style_row"),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(BatteryDetailsCardStyle.entries, key = { it.storageKey }) { style ->
+                    val selected = preferences.batteryDetailsStyle == style
+                    VisualStylePickerCard(
+                        title = style.label,
+                        subtitle = style.subtitle,
+                        selected = selected,
+                        accentColor = previewAccent,
+                        onClick = { onUpdatePreferences { it.copy(batteryDetailsStyle = style) } },
+                        testTagName = "details_style_${style.storageKey}",
+                        cardWidth = 216.dp,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(68.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color.Black)
+                                .padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            AodBatteryDetailsRow(
+                                style = style,
+                                metrics = resolvedMetrics,
+                                accent = previewAccent,
+                                compactMode = true,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Speedometer Color Swatches (10 Swatches) & Brightness Slider (20%-100%)
+        item(key = "design_color_brightness_header") {
+            SectionHeader(
+                title = "Speedometer Color & Brightness",
+                badgeText = "${preferences.accentSwatch.label.uppercase(Locale.US)} • ${(preferences.speedometerBrightness * 100f).roundToInt()}%",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
+        }
+
+        item(key = "design_color_brightness_card") {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.testTag("design_swatches_row"),
+                    ) {
+                        items(AccentSwatch.entries, key = { it.storageKey }) { swatch ->
+                            val isSelected = preferences.accentSwatch == swatch
+                            val swatchColor = Color(swatch.argbInt)
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        onUpdatePreferences { it.copy(accentSwatch = swatch) }
+                                    }
+                                    .padding(horizontal = 3.dp, vertical = 3.dp)
+                                    .testTag("swatch_${swatch.storageKey}"),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .border(
+                                            width = if (isSelected) 2.5.dp else 1.dp,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.onSurface
+                                            } else {
+                                                MaterialTheme.colorScheme.outlineVariant
+                                            },
+                                            shape = CircleShape,
+                                        )
+                                        .padding(4.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (swatch == AccentSwatch.DYNAMIC_AUTO) {
+                                                Brush.sweepGradient(
+                                                    listOf(
+                                                        Color(0xFF38BDF8),
+                                                        Color(0xFF10B981),
+                                                        Color(0xFFF59E0B),
+                                                        Color(0xFFD946EF),
+                                                        Color(0xFF38BDF8),
+                                                    ),
+                                                )
+                                            } else {
+                                                Brush.linearGradient(listOf(swatchColor, swatchColor))
+                                            },
+                                        ),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = "Selected ${swatch.label}",
+                                            tint = if (swatch == AccentSwatch.INDIGO || swatch == AccentSwatch.CORAL_RED) {
+                                                Color.White
+                                            } else {
+                                                Color(0xFF0A1014)
+                                            },
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    } else if (swatch == AccentSwatch.DYNAMIC_AUTO) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoAwesome,
+                                            contentDescription = swatch.label,
+                                            tint = Color(0xFF0A1014),
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = swatch.label,
+                                    style = MonoLabelStyle.copy(
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    ),
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.onSurface
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+                        }
+                    }
+
+                    // Speedometer Brightness Slider (20% - 100%)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Brightness6,
+                                    contentDescription = null,
+                                    tint = previewAccent,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Text(
+                                    text = "Speedometer Brightness",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                            Text(
+                                text = "${(preferences.speedometerBrightness * 100f).roundToInt()}%",
+                                style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold),
+                                color = previewAccent,
+                            )
+                        }
+                        Slider(
+                            value = preferences.speedometerBrightness,
+                            onValueChange = { level ->
+                                onUpdatePreferences { it.copy(speedometerBrightness = level.coerceIn(0.20f, 1.0f)) }
+                            },
+                            valueRange = 0.20f..1.0f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = previewAccent,
+                                activeTrackColor = previewAccent,
+                            ),
+                            modifier = Modifier.testTag("speedometer_brightness_slider"),
+                        )
+                    }
+                }
+            }
+        }
+
+        // 7. Floating Overlay Pill Style Picker (Preserved Live HUD Customization)
+        item(key = "design_pill_header") {
+            SectionHeader(
+                title = "Floating Overlay Pill Style",
+                badgeText = "LIVE HUD",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
+        }
+
+        item(key = "design_pill_row") {
+            LazyRow(
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth()
+                    .testTag("design_pill_picker_row"),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(FloatingPillStyle.entries, key = { it.storageKey }) { style ->
+                    val selected = preferences.floatingPillStyle == style
+                    VisualStylePickerCard(
+                        title = style.label,
+                        subtitle = style.subtitle,
+                        selected = selected,
+                        accentColor = previewAccent,
+                        onClick = { onUpdatePreferences { it.copy(floatingPillStyle = style) } },
+                        testTagName = "pill_style_${style.storageKey}",
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(68.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FloatingPillStylePreview(
+                                style = style,
+                                accentColor = previewAccent,
+                                wattsText = "18.5W",
+                                currentText = "+3.8A",
+                                tempText = "34°C",
+                                percentText = "72%",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 8. What Appears on Screen
+        item(key = "design_what_appears_header") {
+            SectionHeader(
+                title = "What Appears on Screen",
+                badgeText = "ELEMENTS",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
+        }
+
+        item(key = "design_what_appears_section") {
+            WhatAppearsOnScreenCard(
+                preferences = preferences,
+                accentColor = previewAccent,
+                onUpdatePreferences = onUpdatePreferences,
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth(),
+            )
+        }
+
+        // 9. Behavior Controls
+        item(key = "design_behavior_header") {
+            SectionHeader(
+                title = "Behavior & Protection",
+                badgeText = "TIMERS & OLED",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
+        }
+
+        item(key = "design_behavior_section") {
+            BehaviorControlsCard(
+                preferences = preferences,
+                accentColor = previewAccent,
+                onUpdatePreferences = onUpdatePreferences,
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth(),
+            )
+        }
+
+        // 10. Format Controls
+        item(key = "design_format_header") {
+            SectionHeader(
+                title = "Format",
+                badgeText = if (preferences.use24HourTime) "24-HOUR" else "12-HOUR",
+                modifier = Modifier.widthIn(max = 640.dp),
+            )
+        }
+
+        item(key = "design_format_section") {
+            FormatControlsCard(
+                preferences = preferences,
+                accentColor = previewAccent,
+                onUpdatePreferences = onUpdatePreferences,
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LivePhoneMockupPreview(
+    preferences: AppPreferences,
+    powerState: PowerTelemetryState,
+    accentColor: Color,
+    timeText: String,
+    dateText: String,
+    metrics: List<ResolvedAodMetric>,
+    media: AodMediaSnapshot?,
+    notifications: List<AodNotificationBadge>,
+) {
+    val previewPercent = if (powerState.hasLiveReading) powerState.exactLevelPercent else 74.2f
+    val previewCharging = if (powerState.hasLiveReading) powerState.isCharging else true
+    val previewWatts = if (powerState.hasLiveReading) powerState.wattage else 18.5f
+    val previewMa = if (powerState.hasLiveReading) powerState.currentNowMa else 3820
+
+    val bottomPowerLabel = if (preferences.showWattsInsteadOfMa) {
+        String.format(Locale.US, "%s%.1f W", if (previewCharging) "" else "-", abs(previewWatts))
+    } else {
+        "${if (previewMa >= 0) "+" else ""}$previewMa mA"
+    }
+
+    // Sleek Phone Bezel Mockup Frame with Pure AMOLED #000000 Canvas
+    Surface(
+        shape = RoundedCornerShape(34.dp),
+        color = Color(0xFF151920),
+        border = BorderStroke(1.6.dp, accentColor.copy(alpha = 0.55f)),
+        shadowElevation = 6.dp,
+        modifier = Modifier
+            .width(238.dp)
+            .testTag("design_live_preview_box"),
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(7.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(Color.Black)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Punch-hole camera / speaker cutout
+            Box(
+                modifier = Modifier
+                    .width(42.dp)
+                    .height(5.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1E2530)),
+            )
+
+            // Live Clock + Date + Optional Notification Icons
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                AodClockDisplay(
+                    clockStyle = preferences.clockNumberStyle,
+                    timeText = timeText,
+                    dateText = dateText,
+                    accent = accentColor,
+                    compactMode = true,
+                )
+                if (preferences.showAodNotifications) {
+                    AodNotificationIconsRow(
+                        notifications = notifications,
+                        accent = accentColor,
+                        compactMode = true,
+                        showMockFallback = true,
+                    )
+                }
+            }
+
+            // Live 12-Style Speedometer Gauge with Brightness Alpha
+            AodSpeedometerGauge(
+                levelPercent = previewPercent,
+                wattage = previewWatts,
+                currentNowMa = previewMa,
+                isCharging = previewCharging,
+                gaugeStyle = preferences.gaugeStyle,
+                clockNumberStyle = preferences.clockNumberStyle,
+                accentColor = accentColor,
+                gaugeSize = 118.dp,
+                compactMode = true,
+                amoledMode = true,
+                brightnessAlpha = preferences.speedometerBrightness,
+                percentagePrimaryDisplay = preferences.percentagePrimaryDisplay,
+                showWattsInsteadOfMa = preferences.showWattsInsteadOfMa,
+                powerSavingSlowAnim = preferences.powerSavingMode,
+                statusBadgeText = if (previewCharging) "CHARGING" else "IDLE",
+            )
+
+            // Live 4-Style Battery Details Card Row
+            AodBatteryDetailsRow(
+                style = preferences.batteryDetailsStyle,
+                metrics = metrics,
+                accent = accentColor,
+                compactMode = true,
+            )
+
+            // Optional Live Media Bar
+            if (preferences.showMediaControls) {
+                AodMediaControlsBar(
+                    media = media,
+                    accent = accentColor,
+                    onPrevious = {},
+                    onPlayPause = {},
+                    onNext = {},
+                    compactMode = true,
+                    showMockFallback = true,
+                )
+            }
+
+            if (preferences.showMoreInfoButton) {
+                Text(
+                    text = "More Info ⌄",
+                    style = MonoLabelStyle.copy(fontSize = 8.sp),
+                    color = Color(0xFF7B8A9B),
+                )
+            }
+
+            // Bottom Row: Optional Torch | Live Power Readout | Optional Camera
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                if (preferences.showTorchButton) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Black,
+                        border = BorderStroke(0.8.dp, Color(0xFF283340)),
+                        modifier = Modifier.size(22.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.FlashlightOff,
+                                contentDescription = null,
+                                tint = Color(0xFF8C9BAE),
+                                modifier = Modifier.size(11.dp),
+                            )
+                        }
+                    }
+                } else {
+                    Spacer(modifier = Modifier.size(22.dp))
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Bolt,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(11.dp),
+                    )
+                    Text(
+                        text = bottomPowerLabel,
+                        style = MonoLabelStyle.copy(
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        color = accentColor,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+
+                if (preferences.showCameraButton) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Black,
+                        border = BorderStroke(0.8.dp, Color(0xFF283340)),
+                        modifier = Modifier.size(22.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.CameraAlt,
+                                contentDescription = null,
+                                tint = Color(0xFF8C9BAE),
+                                modifier = Modifier.size(11.dp),
+                            )
+                        }
+                    }
+                } else {
+                    Spacer(modifier = Modifier.size(22.dp))
                 }
             }
         }
@@ -561,6 +881,7 @@ private fun VisualStylePickerCard(
     accentColor: Color,
     onClick: () -> Unit,
     testTagName: String,
+    cardWidth: Dp = 176.dp,
     previewContent: @Composable () -> Unit,
 ) {
     Surface(
@@ -576,24 +897,24 @@ private fun VisualStylePickerCard(
             color = if (selected) accentColor else MaterialTheme.colorScheme.outlineVariant,
         ),
         modifier = Modifier
-            .width(194.dp)
+            .width(cardWidth)
             .testTag(testTagName),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(11.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
         ) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(15.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLowest,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 10.dp, horizontal = 8.dp),
+                        .padding(vertical = 8.dp, horizontal = 6.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     previewContent()
@@ -615,7 +936,7 @@ private fun VisualStylePickerCard(
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontFamily = MontserratAlternatesFontFamily,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
+                            fontSize = 12.5.sp,
                         ),
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
@@ -623,7 +944,7 @@ private fun VisualStylePickerCard(
                     )
                     Text(
                         text = subtitle,
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -634,494 +955,69 @@ private fun VisualStylePickerCard(
                     Surface(
                         shape = CircleShape,
                         color = accentColor,
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(19.dp),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.Check,
                                 contentDescription = "Selected",
-                                tint = Color(0xFF0A100A),
-                                modifier = Modifier.size(13.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MiniGaugeThumbnail(
-    style: GaugeStyle,
-    accentColor: Color,
-) {
-    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    Box(
-        modifier = Modifier.size(68.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val startAngle = 135f
-            val totalSweep = 270f
-            val activeSweep = totalSweep * 0.72f
-            val center = Offset(size.width / 2f, size.height / 2f)
-
-            when (style) {
-                GaugeStyle.MINIMAL_THIN_ARC -> {
-                    val strokePx = 4.dp.toPx()
-                    val inset = 6.dp.toPx()
-                    val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
-                    drawArc(
-                        color = trackColor,
-                        startAngle = startAngle,
-                        sweepAngle = totalSweep,
-                        useCenter = false,
-                        topLeft = Offset(inset, inset),
-                        size = arcSize,
-                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                    )
-                    drawArc(
-                        color = accentColor,
-                        startAngle = startAngle,
-                        sweepAngle = activeSweep,
-                        useCenter = false,
-                        topLeft = Offset(inset, inset),
-                        size = arcSize,
-                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                    )
-                }
-
-                GaugeStyle.THICK_RING -> {
-                    val strokePx = 9.dp.toPx()
-                    val inset = 8.dp.toPx()
-                    val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
-                    drawArc(
-                        color = trackColor,
-                        startAngle = startAngle,
-                        sweepAngle = totalSweep,
-                        useCenter = false,
-                        topLeft = Offset(inset, inset),
-                        size = arcSize,
-                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                    )
-                    drawArc(
-                        color = accentColor,
-                        startAngle = startAngle,
-                        sweepAngle = activeSweep,
-                        useCenter = false,
-                        topLeft = Offset(inset, inset),
-                        size = arcSize,
-                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                    )
-                }
-
-                GaugeStyle.SEGMENTED_TICK -> {
-                    val ticks = 20
-                    val active = 14
-                    val outer = size.minDimension / 2f - 3.dp.toPx()
-                    val inner = outer - 7.dp.toPx()
-                    for (i in 0 until ticks) {
-                        val deg = startAngle + totalSweep * (i.toFloat() / (ticks - 1))
-                        val rad = deg * PI / 180.0
-                        drawLine(
-                            color = if (i < active) accentColor else trackColor,
-                            start = Offset(
-                                center.x + (inner * cos(rad)).toFloat(),
-                                center.y + (inner * sin(rad)).toFloat(),
-                            ),
-                            end = Offset(
-                                center.x + (outer * cos(rad)).toFloat(),
-                                center.y + (outer * sin(rad)).toFloat(),
-                            ),
-                            strokeWidth = 2.2.dp.toPx(),
-                            cap = StrokeCap.Round,
-                        )
-                    }
-                }
-            }
-        }
-        Text(
-            text = "72%",
-            style = TextStyle(
-                fontFamily = MontserratAlternatesFontFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-            ),
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-    }
-}
-
-@Composable
-private fun MiniClockNumberThumbnail(
-    style: ClockNumberStyle,
-    accentColor: Color,
-) {
-    val fontFamily = when (style) {
-        ClockNumberStyle.MONTSERRAT_BOLD -> MontserratAlternatesFontFamily
-        ClockNumberStyle.CONDENSED_TECH -> RobotoCondensedFontFamily
-        ClockNumberStyle.OUTLINE_DIGITAL -> MontserratAlternatesFontFamily
-    }
-    val fontWeight = when (style) {
-        ClockNumberStyle.MONTSERRAT_BOLD -> FontWeight.ExtraBold
-        ClockNumberStyle.CONDENSED_TECH -> FontWeight.Bold
-        ClockNumberStyle.OUTLINE_DIGITAL -> FontWeight.Normal
-    }
-    val letterSpacing = when (style) {
-        ClockNumberStyle.MONTSERRAT_BOLD -> (-1).sp
-        ClockNumberStyle.CONDENSED_TECH -> 0.sp
-        ClockNumberStyle.OUTLINE_DIGITAL -> 2.5.sp
-    }
-
-    Column(
-        modifier = Modifier.height(68.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = "12:48",
-            style = TextStyle(
-                fontFamily = fontFamily,
-                fontWeight = fontWeight,
-                fontSize = 28.sp,
-                letterSpacing = letterSpacing,
-            ),
-            color = if (style == ClockNumberStyle.OUTLINE_DIGITAL) {
-                accentColor
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-            maxLines = 1,
-            softWrap = false,
-        )
-        Text(
-            text = "85% • +18.5W",
-            style = MonoLabelStyle.copy(fontSize = 10.sp),
-            color = accentColor,
-            maxLines = 1,
-            softWrap = false,
-        )
-    }
-}
-
-private fun swatchDisplayColor(swatch: AccentSwatch): Color = when (swatch) {
-    AccentSwatch.DYNAMIC_AUTO -> MintEmerald
-    AccentSwatch.EMERALD_GREEN -> EmeraldSwatchPrimary
-    AccentSwatch.CYBER_PEACH -> CyberPeachPrimary
-    AccentSwatch.ELECTRIC_BLUE -> ElectricBluePrimary
-    AccentSwatch.MONOCHROME -> MonochromePrimary
-}
-
-@Composable
-private fun LockscreenLaunchPermissionsCard(
-    accentColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var refreshTick by remember { mutableIntStateOf(0) }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                refreshTick += 1
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    val overlayGranted = remember(context, refreshTick) {
-        Settings.canDrawOverlays(context)
-    }
-    val fullScreenIntentGranted = remember(context, refreshTick) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            nm?.canUseFullScreenIntent() == true
-        } else {
-            true
-        }
-    }
-    val isXiaomiDevice = remember {
-        val brand = Build.BRAND.lowercase(Locale.US)
-        val manufacturer = Build.MANUFACTURER.lowercase(Locale.US)
-        brand.contains("xiaomi") || brand.contains("redmi") || brand.contains("poco") ||
-            manufacturer.contains("xiaomi")
-    }
-
-    Surface(
-        shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (!overlayGranted || !fullScreenIntentGranted) {
-                accentColor.copy(alpha = 0.45f)
-            } else {
-                MaterialTheme.colorScheme.outlineVariant
-            },
-        ),
-        modifier = modifier.testTag("design_lockscreen_permissions_card"),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Security,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Text(
-                        text = "Lockscreen Wake & Pop-up Permissions",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Surface(
-                    shape = CircleShape,
-                    color = if (overlayGranted && fullScreenIntentGranted) {
-                        MaterialTheme.colorScheme.secondaryContainer
-                    } else {
-                        accentColor.copy(alpha = 0.16f)
-                    },
-                ) {
-                    Text(
-                        text = if (overlayGranted && fullScreenIntentGranted) "READY" else "SETUP",
-                        style = MonoLabelStyle.copy(fontSize = 10.sp),
-                        color = if (overlayGranted && fullScreenIntentGranted) {
-                            MaterialTheme.colorScheme.onSecondaryContainer
-                        } else {
-                            accentColor
-                        },
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            LockscreenPermissionActionRow(
-                icon = Icons.Rounded.Layers,
-                title = "Display Over Other Apps",
-                subtitle = "Required for Floating HUD & instant plug-in launch",
-                statusLabel = if (overlayGranted) "GRANTED" else "GRANT",
-                isGranted = overlayGranted,
-                onClick = { openOverlayPermissionPage(context) },
-                testTag = "design_perm_overlay",
-            )
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-                )
-                LockscreenPermissionActionRow(
-                    icon = Icons.Rounded.NotificationsActive,
-                    title = "Full-Screen Lockscreen Alerts",
-                    subtitle = "Android 14+ wake over lockscreen when screen is off",
-                    statusLabel = if (fullScreenIntentGranted) "GRANTED" else "ALLOW",
-                    isGranted = fullScreenIntentGranted,
-                    onClick = { openFullScreenIntentPermissionPage(context) },
-                    testTag = "design_perm_fullscreen_intent",
-                )
-            }
-
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-            )
-            LockscreenPermissionActionRow(
-                icon = Icons.Rounded.OpenInNew,
-                title = if (isXiaomiDevice) "HyperOS Background Pop-up Windows" else "OEM Background Pop-up / Lockscreen",
-                subtitle = "Enable \"Display pop-up windows in background\" & \"Show on Lock screen\"",
-                statusLabel = "OPEN",
-                isGranted = false,
-                isNeutralAction = true,
-                onClick = { openHyperOsBackgroundPopupSettings(context) },
-                testTag = "design_perm_hyperos_popup",
-            )
-        }
-    }
-}
-
-@Composable
-private fun LockscreenPermissionActionRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    statusLabel: String,
-    isGranted: Boolean,
-    isNeutralAction: Boolean = false,
-    onClick: () -> Unit,
-    testTag: String,
-) {
-    Surface(
-        onClick = onClick,
-        color = Color.Transparent,
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag(testTag),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 10.dp),
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = if (isGranted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(19.dp),
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = when {
-                        isGranted -> MaterialTheme.colorScheme.secondaryContainer
-                        isNeutralAction -> MaterialTheme.colorScheme.surfaceContainerHigh
-                        else -> MaterialTheme.colorScheme.tertiaryContainer
-                    },
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        if (isGranted) {
-                            Icon(
-                                imageVector = Icons.Rounded.CheckCircle,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                tint = Color(0xFF0A1014),
                                 modifier = Modifier.size(12.dp),
                             )
                         }
-                        Text(
-                            text = statusLabel,
-                            style = MonoLabelStyle.copy(fontSize = 10.sp),
-                            color = when {
-                                isGranted -> MaterialTheme.colorScheme.onSecondaryContainer
-                                isNeutralAction -> MaterialTheme.colorScheme.primary
-                                else -> MaterialTheme.colorScheme.onTertiaryContainer
-                            },
-                            maxLines = 1,
-                            softWrap = false,
-                        )
                     }
                 }
-                Icon(
-                    imageVector = Icons.Rounded.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp),
-                )
             }
         }
     }
 }
 
-private fun openOverlayPermissionPage(context: Context) {
-    val intent = Intent(
-        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-        Uri.parse("package:${context.packageName}"),
-    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    runCatching { context.startActivity(intent) }
-        .onFailure {
-            runCatching {
-                context.startActivity(
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }
+@Composable
+private fun MiniClockStyleThumbnail(
+    style: ClockNumberStyle,
+    accentColor: Color,
+) {
+    Column(
+        modifier = Modifier.height(64.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (style == ClockNumberStyle.OFF) {
+            Icon(
+                imageVector = Icons.Rounded.VisibilityOff,
+                contentDescription = "Clock off",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(26.dp),
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "HIDDEN",
+                style = MonoLabelStyle.copy(fontSize = 9.5.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                text = "12:48",
+                style = buildClockTextStyle(
+                    style = style,
+                    fontSize = 27.sp,
+                    strokeWidthDp = 1.4.dp,
+                ),
+                color = if (style == ClockNumberStyle.OUTLINE_DIGITAL) {
+                    accentColor
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                maxLines = 1,
+                softWrap = false,
+            )
+            Text(
+                text = "Wed, Nov 26",
+                style = MonoLabelStyle.copy(fontSize = 9.5.sp),
+                color = accentColor,
+                maxLines = 1,
+                softWrap = false,
+            )
         }
-}
-
-private fun openFullScreenIntentPermissionPage(context: Context) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-        val intent = Intent(
-            Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
-            Uri.parse("package:${context.packageName}"),
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { context.startActivity(intent) }
-            .onFailure { openOverlayPermissionPage(context) }
-    } else {
-        openOverlayPermissionPage(context)
     }
-}
-
-private fun openHyperOsBackgroundPopupSettings(context: Context) {
-    val miuiIntent = Intent("miui.intent.action.APP_PERM_EDITOR").apply {
-        putExtra("extra_pkgname", context.packageName)
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    val miuiSpecific = Intent("miui.intent.action.APP_PERM_EDITOR").apply {
-        setClassName(
-            "com.miui.securitycenter",
-            "com.miui.permcenter.permissions.PermissionsEditorActivity",
-        )
-        putExtra("extra_pkgname", context.packageName)
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    runCatching { context.startActivity(miuiSpecific) }
-        .onFailure {
-            runCatching { context.startActivity(miuiIntent) }
-                .onFailure {
-                    runCatching {
-                        context.startActivity(
-                            Intent(
-                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse("package:${context.packageName}"),
-                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                }
-        }
 }

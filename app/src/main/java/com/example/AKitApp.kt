@@ -135,6 +135,12 @@ class AKitAppViewModel(
         }
     }
 
+    fun updatePreferences(transform: (AppPreferences) -> AppPreferences) {
+        viewModelScope.launch {
+            preferencesRepository.updatePreferences(transform)
+        }
+    }
+
     fun checkForUpdates(silent: Boolean) {
         val current = _updateState.value
         if (current.status == UpdateCheckStatus.CHECKING || current.status == UpdateCheckStatus.DOWNLOADING) {
@@ -321,20 +327,9 @@ fun AKitApp(
     }
 
     // Keep Charging AOD & Design Studio styles synchronized with PowerTelemetryEngine (HUD + AOD)
-    LaunchedEffect(
-        preferences.autoLaunchAodOnPlugIn,
-        preferences.gaugeStyle,
-        preferences.floatingPillStyle,
-        preferences.clockNumberStyle,
-        preferences.accentSwatch,
-    ) {
+    LaunchedEffect(preferences) {
         PowerTelemetryEngine.setAutoLaunchAodOnPlugIn(preferences.autoLaunchAodOnPlugIn)
-        PowerTelemetryEngine.updateDesignConfig(
-            gaugeStyle = preferences.gaugeStyle,
-            floatingPillStyle = preferences.floatingPillStyle,
-            clockNumberStyle = preferences.clockNumberStyle,
-            accentSwatch = preferences.accentSwatch,
-        )
+        PowerTelemetryEngine.updateDesignPreferences(preferences)
     }
 
     // Apply user's preferred Default Startup Tab once on cold launch (unless a Drop deep link arrived)
@@ -370,6 +365,7 @@ fun AKitApp(
         floatingPillStyle = preferences.floatingPillStyle,
         clockNumberStyle = preferences.clockNumberStyle,
         accentSwatch = preferences.accentSwatch,
+        use24HourTime = preferences.use24HourTime,
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val useNavigationRail = maxWidth >= 840.dp
@@ -445,10 +441,7 @@ fun AKitApp(
                                 AKitDestination.DESIGN -> DesignScreen(
                                     preferences = preferences,
                                     powerViewModel = powerViewModel,
-                                    onSelectGaugeStyle = appViewModel::setGaugeStyle,
-                                    onSelectFloatingPillStyle = appViewModel::setFloatingPillStyle,
-                                    onSelectClockNumberStyle = appViewModel::setClockNumberStyle,
-                                    onSelectAccentSwatch = appViewModel::setAccentSwatch,
+                                    onUpdatePreferences = appViewModel::updatePreferences,
                                     onToggleAutoLaunchCharging = appViewModel::setAutoLaunchAodOnPlugIn,
                                     contentPadding = listContentPadding,
                                 )

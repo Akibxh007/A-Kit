@@ -246,7 +246,7 @@ fun PowerScreen(
                         )
                     }
 
-                    // 270-degree Arc Gauge centered
+                    // 12-Style Hero Gauge centered
                     PowerHeroArcGauge(
                         levelPercent = state.exactLevelPercent,
                         isCharging = state.isCharging,
@@ -256,6 +256,8 @@ fun PowerScreen(
                         accentColor = heroAccent,
                         gaugeStyle = design.gaugeStyle,
                         clockNumberStyle = design.clockNumberStyle,
+                        wattage = state.wattage,
+                        currentNowMa = state.currentNowMa,
                         gaugeSize = 232.dp,
                     )
 
