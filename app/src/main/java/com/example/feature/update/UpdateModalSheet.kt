@@ -1,8 +1,5 @@
 package com.example.feature.update
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,7 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.InstallMobile
 import androidx.compose.material.icons.rounded.NewReleases
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
@@ -32,7 +28,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -43,8 +38,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -53,14 +46,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
 import com.example.ui.theme.MonoLabelStyle
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UpdateModalSheet(
     updateState: AppUpdateState,
-    onDownloadAndInstall: () -> Unit,
-    onInstallReadyApk: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val release = updateState.release ?: return
@@ -71,13 +61,8 @@ fun UpdateModalSheet(
         formatReleaseNotesForDisplay(release.releaseNotes)
     }
 
-    val isDownloading = updateState.status == UpdateCheckStatus.DOWNLOADING
-    val isReadyToInstall = updateState.status == UpdateCheckStatus.READY_TO_INSTALL &&
-        !updateState.downloadedApkPath.isNullOrBlank()
-    val hasDirectApk = !release.apkDownloadUrl.isNullOrBlank()
-
     ModalBottomSheet(
-        onDismissRequest = { if (!isDownloading) onDismiss() },
+        onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
@@ -156,7 +141,6 @@ fun UpdateModalSheet(
 
                 IconButton(
                     onClick = onDismiss,
-                    enabled = !isDownloading,
                     modifier = Modifier.testTag("update_sheet_close_button"),
                 ) {
                     Icon(
@@ -225,7 +209,7 @@ fun UpdateModalSheet(
                             .size(18.dp),
                     )
                     Text(
-                        text = "Important: Uninstall the previous version before installing the new APK if an installation conflict occurs.",
+                        text = "Important: Uninstall the previous version before installing the new APK if a signature conflict occurs.",
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontWeight = FontWeight.Medium,
                             lineHeight = 18.sp,
@@ -235,95 +219,13 @@ fun UpdateModalSheet(
                 }
             }
 
-            // Live Download Progress Card (or Install Permission Notice)
-            if (isDownloading) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "Downloading ${release.apkFileName}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "${(updateState.downloadProgress * 100f).roundToInt()}%",
-                                style = MonoLabelStyle.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                softWrap = false,
-                            )
-                        }
-                        if (updateState.totalBytes > 0L) {
-                            LinearProgressIndicator(
-                                progress = { updateState.downloadProgress },
-                                strokeCap = StrokeCap.Round,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(7.dp)
-                                    .clip(CircleShape),
-                            )
-                            Text(
-                                text = "${AppUpdateManager.formatBytes(updateState.downloadedBytes)} / ${AppUpdateManager.formatBytes(updateState.totalBytes)}",
-                                style = MonoLabelStyle.copy(fontSize = 10.5.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else {
-                            LinearProgressIndicator(
-                                strokeCap = StrokeCap.Round,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(7.dp)
-                                    .clip(CircleShape),
-                            )
-                        }
-                    }
-                }
-            } else if (updateState.needsInstallPermissionHint) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = "APK downloaded! Allow \"Install unknown apps\" for A-Kit in Settings, then tap Install APK below.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                }
-            } else if (!updateState.statusMessage.isNullOrBlank() && updateState.status == UpdateCheckStatus.OFFLINE_OR_ERROR) {
-                Text(
-                    text = updateState.statusMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            // Primary Action Row: Later | Download & Install
+            // Primary Action Row: Later | Download Update (System Browser)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 FilledTonalButton(
                     onClick = onDismiss,
-                    enabled = !isDownloading,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .weight(0.9f)
@@ -340,13 +242,9 @@ fun UpdateModalSheet(
 
                 Button(
                     onClick = {
-                        when {
-                            isReadyToInstall -> onInstallReadyApk()
-                            hasDirectApk -> onDownloadAndInstall()
-                            else -> openBrowserLink(context, release.htmlUrl)
-                        }
+                        AppUpdateManager.openDownloadInBrowser(context, release)
+                        onDismiss()
                     },
-                    enabled = !isDownloading,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .weight(1.4f)
@@ -354,18 +252,13 @@ fun UpdateModalSheet(
                         .testTag("update_download_install_button"),
                 ) {
                     Icon(
-                        imageVector = if (isReadyToInstall) Icons.Rounded.InstallMobile else Icons.Rounded.Download,
+                        imageVector = Icons.Rounded.Download,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = when {
-                            isDownloading -> "Downloading..."
-                            isReadyToInstall -> "Install APK"
-                            hasDirectApk -> "Download & Install"
-                            else -> "Open Release"
-                        },
+                        text = "Download Update",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                         maxLines = 1,
                         softWrap = false,
@@ -379,7 +272,7 @@ fun UpdateModalSheet(
                 contentAlignment = Alignment.Center,
             ) {
                 TextButton(
-                    onClick = { openBrowserLink(context, AppUpdateManager.WEBSITE_URL) },
+                    onClick = { AppUpdateManager.openUrlInBrowser(context, AppUpdateManager.WEBSITE_URL) },
                     modifier = Modifier.testTag("update_website_link_button"),
                 ) {
                     Text(
@@ -418,9 +311,4 @@ private fun formatReleaseNotesForDisplay(raw: String): List<String> {
         }
         .toList()
         .ifEmpty { listOf("• Performance improvements, bug fixes, and stability updates.") }
-}
-
-private fun openBrowserLink(context: Context, url: String) {
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    runCatching { context.startActivity(intent) }
 }

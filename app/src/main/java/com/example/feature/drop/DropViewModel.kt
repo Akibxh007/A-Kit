@@ -74,7 +74,9 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
         application.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
     private val hotspotState = MutableStateFlow(HotspotState())
-    private val networkSnapshot = MutableStateFlow(readNetworkSnapshot(preferHotspot = false))
+    private val networkSnapshot = MutableStateFlow(
+        NetworkSnapshot(isWifiEnabled = false, isWifiConnected = false, localIp = null),
+    )
     private val statusBanner = MutableStateFlow<String?>(null)
     private val savingHostFileId = MutableStateFlow<String?>(null)
     private val peerState = MutableStateFlow(PeerClientState())
@@ -187,12 +189,17 @@ class DropViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        application.registerReceiver(
-            wifiStateReceiver,
-            IntentFilter(WifiManager.WIFI_STATE_CHANGED_ACTION),
-        )
-        runCatching {
-            connectivityManager?.registerDefaultNetworkCallback(networkCallback)
+        viewModelScope.launch(Dispatchers.IO) {
+            refreshNetwork()
+            runCatching {
+                getApplication<Application>().registerReceiver(
+                    wifiStateReceiver,
+                    IntentFilter(WifiManager.WIFI_STATE_CHANGED_ACTION),
+                )
+            }
+            runCatching {
+                connectivityManager?.registerDefaultNetworkCallback(networkCallback)
+            }
         }
     }
 

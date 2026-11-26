@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -16,10 +17,11 @@ class PowerViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<PowerTelemetryState> = PowerTelemetryEngine.state
 
     init {
-        PowerTelemetryEngine.ensureInitialized(application)
+        // Defer BatteryManager IPC, DataStore reads, and Foreground Service sync off the main thread
+        // so the very first Compose frame renders instantaneously with zero cold-start stall.
+        viewModelScope.launch(Dispatchers.IO) {
+            PowerTelemetryEngine.ensureInitialized(getApplication())
 
-        // Keep Foreground Service synchronized whenever HUD, Protection Alarms, or Auto-Launch AOD change
-        viewModelScope.launch {
             kotlinx.coroutines.flow.combine(
                 PowerTelemetryEngine.state.map { it.settings }.distinctUntilChanged(),
                 PowerTelemetryEngine.autoLaunchAodEnabledFlow,

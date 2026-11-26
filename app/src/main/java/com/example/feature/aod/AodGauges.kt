@@ -1,6 +1,7 @@
 package com.example.feature.aod
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -27,7 +28,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -87,15 +92,29 @@ fun AodSpeedometerGauge(
     statusBadgeText: String? = null,
     bottomPillText: String? = null,
     estimateText: String? = null,
+    animateFromZeroOnLaunch: Boolean = false,
+    sweepReady: Boolean = true,
 ) {
     val clampedBrightness = brightnessAlpha.coerceIn(0.20f, 1.0f)
 
+    var hasEntered by remember { mutableStateOf(!animateFromZeroOnLaunch) }
+    LaunchedEffect(animateFromZeroOnLaunch, sweepReady) {
+        if (animateFromZeroOnLaunch && sweepReady && !hasEntered) {
+            hasEntered = true
+        }
+    }
+
+    val liveTargetProgress = (levelPercent / 100f).coerceIn(0.01f, 1f)
     val animatedProgress by animateFloatAsState(
-        targetValue = (levelPercent / 100f).coerceIn(0.01f, 1f),
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessLow,
-        ),
+        targetValue = if (hasEntered) liveTargetProgress else 0f,
+        animationSpec = if (animateFromZeroOnLaunch) {
+            tween(durationMillis = 800, easing = FastOutSlowInEasing)
+        } else {
+            spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessLow,
+            )
+        },
         label = "aod_gauge_progress",
     )
 
@@ -757,18 +776,6 @@ private fun DrawScope.drawGaugeCanvasStyle(
                     )
                 }
             }
-            // Subtle progress ring inside orbitals
-            val coreR = size.minDimension * 0.30f
-            drawCircle(color = trackColor.copy(alpha = 0.55f), radius = coreR, center = center, style = Stroke(strokePx))
-            drawArc(
-                color = accent,
-                startAngle = -90f,
-                sweepAngle = 360f * progress,
-                useCenter = false,
-                topLeft = Offset(center.x - coreR, center.y - coreR),
-                size = Size(coreR * 2f, coreR * 2f),
-                style = Stroke(width = strokePx * 1.4f, cap = StrokeCap.Round),
-            )
         }
 
         GaugeStyle.CORNER_BRACKETS_HUD -> {

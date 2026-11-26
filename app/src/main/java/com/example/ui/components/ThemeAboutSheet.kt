@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -104,7 +103,6 @@ private data class InteractivePermissionStatus(
     val notificationsGranted: Boolean,
     val overlayGranted: Boolean,
     val mediaGranted: Boolean,
-    val allFilesGranted: Boolean,
     val unrestrictedBattery: Boolean,
 )
 
@@ -118,22 +116,21 @@ private fun readPermissionStatus(context: Context): InteractivePermissionStatus 
         true
     }
     val overlay = Settings.canDrawOverlays(context)
-    val media = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.READ_MEDIA_IMAGES,
-        ) == PackageManager.PERMISSION_GRANTED
+    val mediaPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_IMAGES
     } else {
-        true
+        Manifest.permission.READ_EXTERNAL_STORAGE
     }
-    val allFiles = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+    val media = ContextCompat.checkSelfPermission(
+        context,
+        mediaPermission,
+    ) == PackageManager.PERMISSION_GRANTED
     val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
     val unrestricted = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
     return InteractivePermissionStatus(
         notificationsGranted = notif,
         overlayGranted = overlay,
         mediaGranted = media,
-        allFilesGranted = allFiles,
         unrestrictedBattery = unrestricted,
     )
 }
@@ -395,42 +392,18 @@ fun SettingsModalSheet(
                         subtitle = "Monitors Pictures/Screenshots for SnapClean",
                         granted = permStatus.mediaGranted,
                         onClick = {
-                            if (!permStatus.mediaGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                mediaPermLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
+                            if (!permStatus.mediaGranted) {
+                                val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    Manifest.permission.READ_MEDIA_IMAGES
+                                } else {
+                                    Manifest.permission.READ_EXTERNAL_STORAGE
+                                }
+                                mediaPermLauncher.launch(perm)
                             } else {
                                 openAppDetailsSettings(context)
                             }
                         },
                         testTag = "perm_row_media",
-                    )
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-                    )
-                    InteractivePermissionRow(
-                        icon = Icons.Rounded.VerifiedUser,
-                        title = "All Files Access (Silent Clean)",
-                        subtitle = "Zero-prompt background deletion for SnapClean",
-                        granted = permStatus.allFilesGranted,
-                        onClick = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                val appIntent = Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
-                                )
-                                runCatching { context.startActivity(appIntent) }
-                                    .onFailure {
-                                        runCatching {
-                                            context.startActivity(
-                                                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
-                                            )
-                                        }
-                                    }
-                            } else {
-                                openAppDetailsSettings(context)
-                            }
-                        },
-                        testTag = "perm_row_all_files",
                     )
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 16.dp),
@@ -712,12 +685,10 @@ fun SettingsModalSheet(
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
 
-                    // Manual "Check for Updates" Trigger (GitHub Releases Direct APK Updater)
+                    // Manual "Check for Updates" Trigger (GitHub Releases Browser Updater)
                     val isChecking = updateState.status == UpdateCheckStatus.CHECKING
                     val hasUpdate = updateState.release != null &&
-                        (updateState.status == UpdateCheckStatus.UPDATE_AVAILABLE ||
-                            updateState.status == UpdateCheckStatus.READY_TO_INSTALL ||
-                            updateState.status == UpdateCheckStatus.DOWNLOADING)
+                        updateState.status == UpdateCheckStatus.UPDATE_AVAILABLE
 
                     Surface(
                         onClick = {
@@ -775,7 +746,7 @@ fun SettingsModalSheet(
                                 Column {
                                     Text(
                                         text = if (hasUpdate) {
-                                            "Update Ready (${updateState.release?.tagName})"
+                                            "Update Available (${updateState.release?.tagName})"
                                         } else {
                                             "Check for Updates"
                                         },
@@ -786,7 +757,7 @@ fun SettingsModalSheet(
                                     )
                                     Text(
                                         text = updateState.statusMessage
-                                            ?: "GitHub Releases • Direct APK installer",
+                                            ?: "GitHub Releases • Safe browser download",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -805,7 +776,7 @@ fun SettingsModalSheet(
                                 Text(
                                     text = when {
                                         isChecking -> "CHECKING"
-                                        hasUpdate -> "INSTALL"
+                                        hasUpdate -> "VIEW"
                                         else -> "CHECK"
                                     },
                                     style = MonoLabelStyle,

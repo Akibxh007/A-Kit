@@ -8,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.example.data.ThemePreferencesRepository
 import com.example.feature.drop.DropUrlParser
 
@@ -17,11 +18,15 @@ class MainActivity : ComponentActivity() {
     private var pendingDropUrl by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Install AndroidX SplashScreen before super.onCreate so cold start renders pure #000000 immediately
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
         preferencesRepository = ThemePreferencesRepository(applicationContext)
         pendingDropUrl = extractDropUrl(intent)
 
+        // Render initial Compose frame immediately (< 150ms); all IO, DataStore, and service starts run async
         setContent {
             AKitApp(
                 preferencesRepository = preferencesRepository,

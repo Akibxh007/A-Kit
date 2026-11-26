@@ -97,7 +97,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -2216,21 +2215,7 @@ private fun sharePlainText(context: Context, text: String) {
 }
 
 private fun openFileUri(context: Context, item: DropFileItem) {
-    val resolvedUri = item.localFilePath
-        ?.let { File(it) }
-        ?.takeIf { it.exists() && it.canRead() }
-        ?.let { file ->
-            runCatching {
-                FileProvider.getUriForFile(
-                    context,
-                    "${context.packageName}.drop.fileprovider",
-                    file,
-                )
-            }.getOrNull()
-        }
-        ?: runCatching { Uri.parse(item.uriString) }.getOrNull()
-        ?: return
-
+    val resolvedUri = runCatching { Uri.parse(item.uriString) }.getOrNull() ?: return
     val resolvedMime = DropHubCoordinator.resolveProperMimeType(item.fileName, item.mimeType)
     val intent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(resolvedUri, resolvedMime)
@@ -2246,21 +2231,7 @@ private fun openFileUri(context: Context, item: DropFileItem) {
 }
 
 private fun shareFileUri(context: Context, item: DropFileItem) {
-    val resolvedUri = item.localFilePath
-        ?.let { File(it) }
-        ?.takeIf { it.exists() && it.canRead() }
-        ?.let { file ->
-            runCatching {
-                FileProvider.getUriForFile(
-                    context,
-                    "${context.packageName}.drop.fileprovider",
-                    file,
-                )
-            }.getOrNull()
-        }
-        ?: runCatching { Uri.parse(item.uriString) }.getOrNull()
-        ?: return
-
+    val resolvedUri = runCatching { Uri.parse(item.uriString) }.getOrNull() ?: return
     val resolvedMime = DropHubCoordinator.resolveProperMimeType(item.fileName, item.mimeType)
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = resolvedMime

@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -53,15 +54,17 @@ import com.example.feature.snapclean.SnapCleanScreen
 import com.example.feature.snapclean.SnapCleanViewModel
 import com.example.feature.update.AppUpdateManager
 import com.example.feature.update.AppUpdateState
-import com.example.feature.update.InstallLaunchResult
 import com.example.feature.update.UpdateCheckStatus
 import com.example.feature.update.UpdateModalSheet
+import com.example.ui.components.AKitSplashOverlay
 import com.example.ui.components.AKitTopBar
 import com.example.ui.components.SettingsModalSheet
 import com.example.ui.navigation.AKitBottomNavigationBar
 import com.example.ui.navigation.AKitDestination
 import com.example.ui.navigation.AKitNavigationRail
 import com.example.ui.theme.AKitTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -69,7 +72,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
 
 class AKitAppViewModel(
     application: Application,
@@ -142,11 +144,9 @@ class AKitAppViewModel(
     }
 
     fun checkForUpdates(silent: Boolean) {
-        val current = _updateState.value
-        if (current.status == UpdateCheckStatus.CHECKING || current.status == UpdateCheckStatus.DOWNLOADING) {
-            return
-        }
-        viewModelScope.launch {
+        if (_updateState.value.status == UpdateCheckStatus.CHECKING) return
+
+        viewModelScope.launch(Dispatchers.IO) {
             if (!silent) {
                 _updateState.update {
                     it.copy(
@@ -162,10 +162,6 @@ class AKitAppViewModel(
                             status = UpdateCheckStatus.UPDATE_AVAILABLE,
                             release = result.release,
                             showSheet = true,
-                            downloadedBytes = 0L,
-                            totalBytes = result.release.apkSizeBytes,
-                            downloadedApkPath = null,
-                            needsInstallPermissionHint = false,
                             statusMessage = "Version ${result.release.tagName} available",
                         )
                     }
@@ -192,77 +188,6 @@ class AKitAppViewModel(
                             )
                         }
                     }
-                }
-            }
-        }
-    }
-
-    fun downloadAndInstallUpdate() {
-        val release = _updateState.value.release ?: return
-        if (_updateState.value.status == UpdateCheckStatus.DOWNLOADING) return
-
-        viewModelScope.launch {
-            _updateState.update {
-                it.copy(
-                    status = UpdateCheckStatus.DOWNLOADING,
-                    downloadedBytes = 0L,
-                    totalBytes = release.apkSizeBytes,
-                    needsInstallPermissionHint = false,
-                    statusMessage = "Downloading ${release.apkFileName}...",
-                )
-            }
-            val apkFile = AppUpdateManager.downloadApk(
-                context = getApplication(),
-                release = release,
-            ) { downloaded, total ->
-                _updateState.update {
-                    it.copy(
-                        downloadedBytes = downloaded,
-                        totalBytes = total,
-                    )
-                }
-            }
-
-            if (apkFile == null) {
-                _updateState.update {
-                    it.copy(
-                        status = UpdateCheckStatus.OFFLINE_OR_ERROR,
-                        statusMessage = "Download failed. Check your connection or download from a-kit.akib.top.",
-                    )
-                }
-                return@launch
-            }
-
-            _updateState.update {
-                it.copy(
-                    status = UpdateCheckStatus.READY_TO_INSTALL,
-                    downloadedApkPath = apkFile.absolutePath,
-                    statusMessage = "APK ready to install",
-                )
-            }
-            launchInstallerForFile(apkFile)
-        }
-    }
-
-    fun installReadyApk() {
-        val path = _updateState.value.downloadedApkPath ?: return
-        launchInstallerForFile(File(path))
-    }
-
-    private fun launchInstallerForFile(apkFile: File) {
-        when (AppUpdateManager.installDownloadedApk(getApplication(), apkFile)) {
-            InstallLaunchResult.LAUNCHED_INSTALLER -> {
-                _updateState.update { it.copy(needsInstallPermissionHint = false) }
-            }
-            InstallLaunchResult.NEEDS_UNKNOWN_SOURCES_PERMISSION -> {
-                _updateState.update { it.copy(needsInstallPermissionHint = true) }
-            }
-            InstallLaunchResult.FAILED -> {
-                _updateState.update {
-                    it.copy(
-                        status = UpdateCheckStatus.OFFLINE_OR_ERROR,
-                        statusMessage = "Unable to launch package installer. Try downloading from a-kit.akib.top.",
-                    )
                 }
             }
         }
@@ -308,7 +233,9 @@ fun AKitApp(
     onConsumeIncomingDropUrl: () -> Unit = {},
 ) {
     val application = LocalContext.current.applicationContext as Application
-    val factory = AKitViewModelFactory(application, preferencesRepository)
+    val factory = remember(application, preferencesRepository) {
+        AKitViewModelFactory(application, preferencesRepository)
+    }
 
     val appViewModel: AKitAppViewModel = viewModel(factory = factory)
     val powerViewModel: PowerViewModel = viewModel(factory = factory)
@@ -320,9 +247,11 @@ fun AKitApp(
     var currentDestination by rememberSaveable { mutableStateOf(AKitDestination.POWER) }
     var appliedStartupTab by rememberSaveable { mutableStateOf(false) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
+    var showSplashOverlay by rememberSaveable { mutableStateOf(incomingDropUrl.isNullOrBlank()) }
 
-    // Silent GitHub Releases update check on cold launch (fails silently when offline)
+    // Silent GitHub Releases update check deferred past splash animation (zero cold-start contention)
     LaunchedEffect(Unit) {
+        delay(950L)
         appViewModel.checkForUpdates(silent = true)
     }
 
@@ -346,6 +275,7 @@ fun AKitApp(
     // Open Drop tab & auto-connect natively when launched via akit://drop or LAN Drop URL
     LaunchedEffect(incomingDropUrl) {
         if (!incomingDropUrl.isNullOrBlank()) {
+            showSplashOverlay = false
             appliedStartupTab = true
             currentDestination = AKitDestination.DROP
             dropViewModel.connectFromRawPayload(incomingDropUrl)
@@ -401,7 +331,6 @@ fun AKitApp(
                             .fillMaxSize()
                             .padding(innerPadding),
                     ) {
-                        // Clean 96.dp bottom padding so scrollable content never crowds the solid Material 3 NavigationBar
                         val listContentPadding = PaddingValues(
                             start = 16.dp,
                             end = 16.dp,
@@ -437,6 +366,7 @@ fun AKitApp(
                                 AKitDestination.POWER -> PowerScreen(
                                     viewModel = powerViewModel,
                                     contentPadding = listContentPadding,
+                                    entranceVisible = !showSplashOverlay,
                                 )
                                 AKitDestination.DESIGN -> DesignScreen(
                                     preferences = preferences,
@@ -479,11 +409,16 @@ fun AKitApp(
             if (updateState.showSheet && updateState.release != null) {
                 UpdateModalSheet(
                     updateState = updateState,
-                    onDownloadAndInstall = appViewModel::downloadAndInstallUpdate,
-                    onInstallReadyApk = appViewModel::installReadyApk,
                     onDismiss = appViewModel::dismissUpdateSheet,
                 )
             }
+
+            // Branded AMOLED spring splash overlay (650ms total -> smooth cross-fade to dashboard)
+            AKitSplashOverlay(
+                visible = showSplashOverlay,
+                accentColor = MaterialTheme.colorScheme.primary,
+                onAnimationFinished = { showSplashOverlay = false },
+            )
         }
     }
 }

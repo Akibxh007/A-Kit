@@ -4,6 +4,11 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -81,6 +86,7 @@ fun PowerScreen(
     viewModel: PowerViewModel,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    entranceVisible: Boolean = true,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val settings = state.settings
@@ -197,6 +203,7 @@ fun PowerScreen(
 
         // 1. Minimal, Dynamic Power Hero Section (270-Degree Arc Gauge + Power Pill)
         item(key = "power_hero_gauge") {
+            StaggeredEntranceItem(index = 0, visible = entranceVisible) {
             Surface(
                 shape = RoundedCornerShape(28.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
@@ -246,7 +253,7 @@ fun PowerScreen(
                         )
                     }
 
-                    // 12-Style Hero Gauge centered
+                    // 12-Style Hero Gauge centered (sweeps 0 -> live% over 800ms on dashboard entrance)
                     PowerHeroArcGauge(
                         levelPercent = state.exactLevelPercent,
                         isCharging = state.isCharging,
@@ -259,6 +266,8 @@ fun PowerScreen(
                         wattage = state.wattage,
                         currentNowMa = state.currentNowMa,
                         gaugeSize = 232.dp,
+                        animateFromZeroOnLaunch = true,
+                        sweepReady = entranceVisible,
                     )
 
                     // Compact Hardware Calibration Strip
@@ -306,11 +315,13 @@ fun PowerScreen(
                     }
                 }
             }
+            }
         }
 
         // 2. Single-Row Status Banner directly below Arc Gauge (Floating Overlay Pill / Monitoring Active)
         item(key = "power_status_banner") {
             val hudActive = settings.hudEnabled && state.overlayPermissionGranted
+            StaggeredEntranceItem(index = 1, visible = entranceVisible) {
             Surface(
                 onClick = { activeSheet = PowerActiveSheet.FLOATING_HUD },
                 shape = RoundedCornerShape(22.dp),
@@ -393,15 +404,18 @@ fun PowerScreen(
                     )
                 }
             }
+            }
         }
 
         // 3. 2-Column Live Telemetry Bento Grid (with animated sparkline backgrounds)
         item(key = "power_bento_header") {
-            SectionHeader(
-                title = "Live Hardware Metrics",
-                badgeText = state.technology.uppercase(Locale.US),
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
+            StaggeredEntranceItem(index = 2, visible = entranceVisible) {
+                SectionHeader(
+                    title = "Live Hardware Metrics",
+                    badgeText = state.technology.uppercase(Locale.US),
+                    modifier = Modifier.widthIn(max = 640.dp),
+                )
+            }
         }
 
         item(key = "power_bento_grid") {
@@ -429,122 +443,133 @@ fun PowerScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 // Row 1: VOLTAGE | CURRENT
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    BentoMetricCard(
-                        label = "VOLTAGE",
-                        value = voltageText,
-                        subtext = voltageSub,
-                        icon = Icons.Rounded.ElectricBolt,
-                        accentColor = design.chargingAccent,
-                        sparklineValues = voltageSeries,
-                        onClick = { selectedDetailMetric = PowerMetricType.VOLTAGE },
-                        testTagName = "bento_metric_voltage",
-                        modifier = Modifier.weight(1f),
-                    )
-                    BentoMetricCard(
-                        label = "CURRENT",
-                        value = currentText,
-                        subtext = if (state.isCharging) "Net inflow" else "System draw",
-                        icon = Icons.Rounded.Bolt,
-                        accentColor = heroAccent,
-                        sparklineValues = currentSeries,
-                        onClick = { selectedDetailMetric = PowerMetricType.CURRENT },
-                        testTagName = "bento_metric_current",
-                        modifier = Modifier.weight(1f),
-                    )
+                StaggeredEntranceItem(index = 2, visible = entranceVisible) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        BentoMetricCard(
+                            label = "VOLTAGE",
+                            value = voltageText,
+                            subtext = voltageSub,
+                            icon = Icons.Rounded.ElectricBolt,
+                            accentColor = design.chargingAccent,
+                            sparklineValues = voltageSeries,
+                            onClick = { selectedDetailMetric = PowerMetricType.VOLTAGE },
+                            testTagName = "bento_metric_voltage",
+                            modifier = Modifier.weight(1f),
+                        )
+                        BentoMetricCard(
+                            label = "CURRENT",
+                            value = currentText,
+                            subtext = if (state.isCharging) "Net inflow" else "System draw",
+                            icon = Icons.Rounded.Bolt,
+                            accentColor = heroAccent,
+                            sparklineValues = currentSeries,
+                            onClick = { selectedDetailMetric = PowerMetricType.CURRENT },
+                            testTagName = "bento_metric_current",
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
 
                 // Row 2: WATTAGE | TEMPERATURE
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    BentoMetricCard(
-                        label = "WATTAGE",
-                        value = wattageText,
-                        subtext = String.format(Locale.US, "Peak %.1f W", state.peakSessionWatts),
-                        icon = Icons.Rounded.Speed,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        sparklineValues = wattageSeries,
-                        onClick = { selectedDetailMetric = PowerMetricType.WATTAGE },
-                        testTagName = "bento_metric_wattage",
-                        modifier = Modifier.weight(1f),
-                    )
-                    BentoMetricCard(
-                        label = "TEMPERATURE",
-                        value = tempText,
-                        subtext = if (state.temperatureCelsius >= settings.overheatThresholdC) {
-                            "Above limit"
-                        } else {
-                            "Thermal nominal"
-                        },
-                        icon = Icons.Rounded.Thermostat,
-                        accentColor = design.dischargingAccent,
-                        sparklineValues = tempSeries,
-                        onClick = { selectedDetailMetric = PowerMetricType.TEMPERATURE },
-                        testTagName = "bento_metric_temp",
-                        modifier = Modifier.weight(1f),
-                    )
+                StaggeredEntranceItem(index = 3, visible = entranceVisible) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        BentoMetricCard(
+                            label = "WATTAGE",
+                            value = wattageText,
+                            subtext = String.format(Locale.US, "Peak %.1f W", state.peakSessionWatts),
+                            icon = Icons.Rounded.Speed,
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            sparklineValues = wattageSeries,
+                            onClick = { selectedDetailMetric = PowerMetricType.WATTAGE },
+                            testTagName = "bento_metric_wattage",
+                            modifier = Modifier.weight(1f),
+                        )
+                        BentoMetricCard(
+                            label = "TEMPERATURE",
+                            value = tempText,
+                            subtext = if (state.temperatureCelsius >= settings.overheatThresholdC) {
+                                "Above limit"
+                            } else {
+                                "Thermal nominal"
+                            },
+                            icon = Icons.Rounded.Thermostat,
+                            accentColor = design.dischargingAccent,
+                            sparklineValues = tempSeries,
+                            onClick = { selectedDetailMetric = PowerMetricType.TEMPERATURE },
+                            testTagName = "bento_metric_temp",
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
 
                 // Row 3: HEALTH | PLUGGED
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    BentoMetricCard(
-                        label = "HEALTH",
-                        value = healthText,
-                        subtext = state.healthLabel,
-                        icon = Icons.Rounded.HealthAndSafety,
-                        accentColor = design.chargingAccent,
-                        sparklineValues = levelSeries,
-                        onClick = { selectedDetailMetric = PowerMetricType.HEALTH },
-                        testTagName = "power_health_card",
-                        modifier = Modifier.weight(1f),
-                    )
-                    BentoMetricCard(
-                        label = "PLUGGED",
-                        value = state.pluggedLabel,
-                        subtext = state.statusLabel,
-                        icon = Icons.Rounded.Power,
-                        accentColor = heroAccent,
-                        sparklineValues = wattageSeries,
-                        onClick = { selectedDetailMetric = PowerMetricType.PLUGGED },
-                        testTagName = "bento_metric_plugged",
-                        modifier = Modifier.weight(1f),
-                    )
+                StaggeredEntranceItem(index = 4, visible = entranceVisible) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        BentoMetricCard(
+                            label = "HEALTH",
+                            value = healthText,
+                            subtext = state.healthLabel,
+                            icon = Icons.Rounded.HealthAndSafety,
+                            accentColor = design.chargingAccent,
+                            sparklineValues = levelSeries,
+                            onClick = { selectedDetailMetric = PowerMetricType.HEALTH },
+                            testTagName = "power_health_card",
+                            modifier = Modifier.weight(1f),
+                        )
+                        BentoMetricCard(
+                            label = "PLUGGED",
+                            value = state.pluggedLabel,
+                            subtext = state.statusLabel,
+                            icon = Icons.Rounded.Power,
+                            accentColor = heroAccent,
+                            sparklineValues = wattageSeries,
+                            onClick = { selectedDetailMetric = PowerMetricType.PLUGGED },
+                            testTagName = "bento_metric_plugged",
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
 
                 // Row 4: MAX CAPACITY
-                BentoMetricCard(
-                    label = "MAX CAPACITY",
-                    value = maxCapValue,
-                    subtext = "Design ${settings.designCapacityMah} mAh • Tap for capacity insights",
-                    icon = Icons.Rounded.BatteryStd,
-                    accentColor = MaterialTheme.colorScheme.primary,
-                    sparklineValues = levelSeries,
-                    onClick = { selectedDetailMetric = PowerMetricType.MAX_CAPACITY },
-                    testTagName = "bento_metric_capacity",
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                StaggeredEntranceItem(index = 5, visible = entranceVisible) {
+                    BentoMetricCard(
+                        label = "MAX CAPACITY",
+                        value = maxCapValue,
+                        subtext = "Design ${settings.designCapacityMah} mAh • Tap for capacity insights",
+                        icon = Icons.Rounded.BatteryStd,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        sparklineValues = levelSeries,
+                        onClick = { selectedDetailMetric = PowerMetricType.MAX_CAPACITY },
+                        testTagName = "bento_metric_capacity",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
 
         // 4. Charging AOD & Protection Guards Section
         item(key = "power_tools_header") {
             Spacer(modifier = Modifier.height(2.dp))
-            SectionHeader(
-                title = "Charging AOD & Guards",
-                badgeText = "ALL UNLOCKED",
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
+            StaggeredEntranceItem(index = 5, visible = entranceVisible) {
+                SectionHeader(
+                    title = "Charging AOD & Guards",
+                    badgeText = "ALL UNLOCKED",
+                    modifier = Modifier.widthIn(max = 640.dp),
+                )
+            }
         }
 
         item(key = "power_aod_card") {
+            StaggeredEntranceItem(index = 6, visible = entranceVisible) {
             Surface(
                 modifier = Modifier
                     .widthIn(max = 640.dp)
@@ -638,9 +663,11 @@ fun PowerScreen(
                     }
                 }
             }
+            }
         }
 
         item(key = "power_alarms_card_item") {
+            StaggeredEntranceItem(index = 7, visible = entranceVisible) {
             Surface(
                 onClick = { activeSheet = PowerActiveSheet.PROTECTION_ALARMS },
                 shape = RoundedCornerShape(24.dp),
@@ -732,37 +759,44 @@ fun PowerScreen(
                     }
                 }
             }
+            }
         }
 
         // 5. Unlocked Pro Charts Section
         item(key = "power_charts_header") {
             Spacer(modifier = Modifier.height(2.dp))
-            SectionHeader(
-                title = "Live Analytics Charts",
-                badgeText = "CANVAS LIVE",
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
+            StaggeredEntranceItem(index = 7, visible = entranceVisible) {
+                SectionHeader(
+                    title = "Live Analytics Charts",
+                    badgeText = "CANVAS LIVE",
+                    modifier = Modifier.widthIn(max = 640.dp),
+                )
+            }
         }
 
         item(key = "power_level_bar_chart") {
-            ChargingPowerByLevelCard(
-                brackets = state.bracketStats,
-                currentLevelPercent = state.levelPercent,
-                currentWatts = state.wattage,
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
+            StaggeredEntranceItem(index = 8, visible = entranceVisible) {
+                ChargingPowerByLevelCard(
+                    brackets = state.bracketStats,
+                    currentLevelPercent = state.levelPercent,
+                    currentWatts = state.wattage,
+                    modifier = Modifier.widthIn(max = 640.dp),
+                )
+            }
         }
 
         item(key = "power_thermal_speed_chart") {
-            LiveThermalSpeedChartCard(
-                samples = state.sessionSamples,
-                tempUnit = settings.tempUnit,
-                peakWatts = state.peakSessionWatts,
-                sessionHistory = state.sessionHistory,
-                onSaveSnapshot = viewModel::saveSessionSnapshot,
-                onClearHistory = viewModel::clearLocalAnalytics,
-                modifier = Modifier.widthIn(max = 640.dp),
-            )
+            StaggeredEntranceItem(index = 9, visible = entranceVisible) {
+                LiveThermalSpeedChartCard(
+                    samples = state.sessionSamples,
+                    tempUnit = settings.tempUnit,
+                    peakWatts = state.peakSessionWatts,
+                    sessionHistory = state.sessionHistory,
+                    onSaveSnapshot = viewModel::saveSessionSnapshot,
+                    onClearHistory = viewModel::clearLocalAnalytics,
+                    modifier = Modifier.widthIn(max = 640.dp),
+                )
+            }
         }
     }
 
@@ -831,6 +865,34 @@ fun PowerScreen(
             onToggleTempUnit = viewModel::toggleTempUnit,
             onDismiss = { selectedDetailMetric = null },
         )
+    }
+}
+
+@Composable
+private fun StaggeredEntranceItem(
+    index: Int,
+    visible: Boolean,
+    content: @Composable () -> Unit,
+) {
+    val staggerDelayMs = (index.coerceAtLeast(0) * 50).coerceAtMost(450)
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(
+            animationSpec = tween(
+                durationMillis = 340,
+                delayMillis = staggerDelayMs,
+                easing = FastOutSlowInEasing,
+            ),
+        ) + slideInVertically(
+            animationSpec = tween(
+                durationMillis = 380,
+                delayMillis = staggerDelayMs,
+                easing = FastOutSlowInEasing,
+            ),
+            initialOffsetY = { 28 },
+        ),
+    ) {
+        content()
     }
 }
 

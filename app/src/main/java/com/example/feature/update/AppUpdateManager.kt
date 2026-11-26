@@ -3,21 +3,14 @@ package com.example.feature.update
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.Settings
 import android.util.Xml
 import androidx.compose.runtime.Immutable
-import androidx.core.content.FileProvider
 import androidx.core.text.HtmlCompat
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
-import java.io.BufferedInputStream
-import java.io.File
-import java.io.FileOutputStream
 import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -40,8 +33,6 @@ enum class UpdateCheckStatus {
     CHECKING,
     UP_TO_DATE,
     UPDATE_AVAILABLE,
-    DOWNLOADING,
-    READY_TO_INSTALL,
     OFFLINE_OR_ERROR,
 }
 
@@ -50,25 +41,8 @@ data class AppUpdateState(
     val status: UpdateCheckStatus = UpdateCheckStatus.IDLE,
     val showSheet: Boolean = false,
     val release: GitHubReleaseInfo? = null,
-    val downloadedBytes: Long = 0L,
-    val totalBytes: Long = 0L,
-    val downloadedApkPath: String? = null,
     val statusMessage: String? = null,
-    val needsInstallPermissionHint: Boolean = false,
-) {
-    val downloadProgress: Float
-        get() = if (totalBytes > 0L) {
-            (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
-        } else {
-            0f
-        }
-}
-
-enum class InstallLaunchResult {
-    LAUNCHED_INSTALLER,
-    NEEDS_UNKNOWN_SOURCES_PERMISSION,
-    FAILED,
-}
+)
 
 object AppUpdateManager {
 
@@ -81,8 +55,6 @@ object AppUpdateManager {
     private const val GITHUB_API_VERSION = "2022-11-28"
     private const val CONNECT_TIMEOUT_MS = 10_000
     private const val READ_TIMEOUT_MS = 12_000
-    private const val DOWNLOAD_READ_TIMEOUT_MS = 35_000
-    private const val DOWNLOAD_BUFFER_SIZE = 65_536
     private const val DEFAULT_RELEASE_NOTES = "Performance improvements, bug fixes, and stability updates."
 
     private fun userAgent(versionName: String = BuildConfig.VERSION_NAME): String =
@@ -116,6 +88,28 @@ object AppUpdateManager {
         } else {
             CheckResult.UpToDate(release.versionName)
         }
+    }
+
+    /**
+     * Opens the verified release APK URL (or official A-Kit website fallback) in the user's
+     * system browser so Android's browser & package installer handle the download safely
+     * without requiring `REQUEST_INSTALL_PACKAGES` or an APK `FileProvider`.
+     */
+    fun openDownloadInBrowser(context: Context, release: GitHubReleaseInfo): Boolean {
+        val targetUrl = release.apkDownloadUrl?.takeIf { it.isNotBlank() }
+            ?: release.htmlUrl.takeIf { it.isNotBlank() }
+            ?: WEBSITE_URL
+        return openUrlInBrowser(context, targetUrl)
+    }
+
+    fun openUrlInBrowser(context: Context, url: String): Boolean {
+        return runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
     }
 
     private fun fetchReleaseFromGitHubApi(currentVersionName: String): GitHubReleaseInfo? {
@@ -241,10 +235,6 @@ object AppUpdateManager {
         }
     }
 
-    /**
-     * Secondary fallback: follows the public web redirect from `/releases/latest` -> `/releases/tag/{tag}`
-     * in case both the JSON API and Atom feed fail.
-     */
     private fun fetchReleaseFromLatestRedirect(currentVersionName: String): GitHubReleaseInfo? {
         var connection: HttpURLConnection? = null
         return try {
@@ -342,18 +332,15 @@ object AppUpdateManager {
     }
 
     private fun extractTagFromAtomEntry(entry: AtomEntryData): String? {
-        // 1. Prefer `<link href=".../releases/tag/v1.5.0"/>`
         entry.linkHref?.let { href ->
             extractTagFromUrl(href)?.let { return it }
         }
-        // 2. Parse `<id>tag:github.com,2008:Repository/123456/v1.5.0</id>`
         entry.id?.let { id ->
             val candidate = id.substringAfterLast('/').trim()
             if (candidate.isNotEmpty() && candidate.any { it.isDigit() }) {
                 return candidate
             }
         }
-        // 3. Extract version token from `<title>` (e.g. "A-Kit v1.5.0")
         entry.title?.let { title ->
             val match = Regex("v?\\d+\\.\\d+(?:\\.\\d+)?", RegexOption.IGNORE_CASE).find(title)
             if (match != null) {
@@ -389,13 +376,6 @@ object AppUpdateManager {
         return cleaned.ifEmpty { DEFAULT_RELEASE_NOTES }
     }
 
-    /**
-     * Resolves the real downloadable `.apk` asset URL for [tagName]:
-     * 1. Queries GitHub's public `expanded_assets/{tag}` HTML fragment (and release HTML fallback)
-     *    so non-standard APK filenames are discovered automatically without API rate limits.
-     * 2. Falls back to the canonical direct APK URL `https://github.com/Akibxh007/A-Kit/releases/download/{tag}/A-Kit-{tag}.apk`.
-     * 3. Fetches `Content-Length` via a lightweight HEAD request when available.
-     */
     private fun resolveFallbackApkAsset(
         tagName: String,
         currentVersionName: String,
@@ -443,7 +423,7 @@ object AppUpdateManager {
                     "https://github.com$href"
                 }
             } catch (_: Exception) {
-                // Try next page candidate or fall back to canonical direct URL
+                // Fall back to next candidate or canonical direct APK URL
             } finally {
                 conn?.disconnect()
             }
@@ -471,117 +451,9 @@ object AppUpdateManager {
         }
     }
 
-    suspend fun downloadApk(
-        context: Context,
-        release: GitHubReleaseInfo,
-        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
-    ): File? = withContext(Dispatchers.IO) {
-        val downloadUrl = release.apkDownloadUrl ?: return@withContext null
-
-        // Save directly into app external Downloads dir (matching FileProvider path), with cache fallback
-        val updatesDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?.apply { mkdirs() }
-            ?: File(context.cacheDir, "updates").apply { mkdirs() }
-
-        val safeFileName = release.apkFileName.replace(Regex("[^A-Za-z0-9._-]"), "_")
-            .ifBlank { "A-Kit-${release.tagName}.apk" }
-
-        // Clean stale A-Kit update APKs / partial downloads to avoid storage bloat
-        updatesDir.listFiles()?.forEach { old ->
-            if (old.isFile &&
-                old.name.startsWith("A-Kit-", ignoreCase = true) &&
-                (old.name.endsWith(".apk", ignoreCase = true) || old.name.endsWith(".part", ignoreCase = true)) &&
-                old.name != safeFileName
-            ) {
-                runCatching { old.delete() }
-            }
-        }
-
-        val targetFile = File(updatesDir, safeFileName)
-        val tempFile = File(updatesDir, "$safeFileName.part")
-
-        var connection: HttpURLConnection? = null
-        try {
-            connection = openConnectionFollowingRedirects(downloadUrl)
-            val responseCode = connection.responseCode
-            if (responseCode !in 200..299) {
-                return@withContext null
-            }
-
-            val contentLength = connection.contentLengthLong.takeIf { it > 0L } ?: release.apkSizeBytes
-            var totalRead = 0L
-            var lastEmitMs = 0L
-
-            BufferedInputStream(connection.inputStream, DOWNLOAD_BUFFER_SIZE).use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        totalRead += read
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitMs >= 100L || (contentLength > 0L && totalRead >= contentLength)) {
-                            lastEmitMs = now
-                            onProgress(totalRead, contentLength)
-                        }
-                    }
-                    output.flush()
-                }
-            }
-
-            if (totalRead <= 0L) {
-                runCatching { tempFile.delete() }
-                return@withContext null
-            }
-
-            if (targetFile.exists()) targetFile.delete()
-            if (!tempFile.renameTo(targetFile)) {
-                tempFile.copyTo(targetFile, overwrite = true)
-                tempFile.delete()
-            }
-            onProgress(totalRead, maxOf(contentLength, totalRead))
-            targetFile
-        } catch (_: Exception) {
-            runCatching { tempFile.delete() }
-            null
-        } finally {
-            connection?.disconnect()
-        }
-    }
-
-    fun installDownloadedApk(context: Context, apkFile: File): InstallLaunchResult {
-        if (!apkFile.exists() || apkFile.length() <= 0L) {
-            return InstallLaunchResult.FAILED
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-            val permIntent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            runCatching { context.startActivity(permIntent) }
-            return InstallLaunchResult.NEEDS_UNKNOWN_SOURCES_PERMISSION
-        }
-
-        return runCatching {
-            val apkUri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.drop.fileprovider",
-                apkFile,
-            )
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(apkUri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(installIntent)
-            InstallLaunchResult.LAUNCHED_INSTALLER
-        }.getOrDefault(InstallLaunchResult.FAILED)
-    }
-
     private fun openConnectionFollowingRedirects(
         startUrl: String,
-        method: String = "GET",
+        method: String = "HEAD",
         versionName: String = BuildConfig.VERSION_NAME,
         maxRedirects: Int = 8,
     ): HttpURLConnection {
@@ -590,7 +462,7 @@ object AppUpdateManager {
             val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = method
                 connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = if (method == "HEAD") READ_TIMEOUT_MS else DOWNLOAD_READ_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
                 instanceFollowRedirects = false
                 setRequestProperty("User-Agent", userAgent(versionName))
                 setRequestProperty("Accept", "application/octet-stream, */*")

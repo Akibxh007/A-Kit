@@ -3,13 +3,10 @@ package com.example.feature.snapclean
 import android.Manifest
 import android.app.Application
 import android.app.PendingIntent
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.MediaStore
-import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -49,7 +46,6 @@ class SnapCleanViewModel(
             settings = settings,
             mediaPermissionGranted = isMediaPermissionGranted(),
             notificationPermissionGranted = isNotificationPermissionGranted(),
-            allFilesAccessGranted = isAllFilesAccessGranted(),
             isWatcherServiceRunning = watcherRunning,
             pendingQueue = pending,
             protectedVault = vault,
@@ -61,15 +57,14 @@ class SnapCleanViewModel(
         initialValue = SnapCleanUiState(
             mediaPermissionGranted = isMediaPermissionGranted(),
             notificationPermissionGranted = isNotificationPermissionGranted(),
-            allFilesAccessGranted = isAllFilesAccessGranted(),
             isWatcherServiceRunning = SnapCleanCoordinator.isWatcherRunning.value,
         ),
     )
 
     init {
-        // Ensure periodic background sweeper is registered and sync watcher if enabled
-        SnapCleanSweepWorker.ensureScheduled(application)
-        viewModelScope.launch {
+        // Offload WorkManager & DataStore startup completely off the main thread for zero cold-start jank
+        viewModelScope.launch(Dispatchers.IO) {
+            SnapCleanSweepWorker.ensureScheduled(getApplication())
             val settings = repo.getSettingsOnce()
             if (settings.autoWatchEnabled && isMediaPermissionGranted()) {
                 SnapCleanWatcherService.start(getApplication())
@@ -236,6 +231,8 @@ class SnapCleanViewModel(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             add(Manifest.permission.READ_MEDIA_IMAGES)
             add(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
     }.toTypedArray()
 
@@ -249,42 +246,16 @@ class SnapCleanViewModel(
         }
     }
 
-    fun buildAllFilesAccessIntent(): Intent {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Intent(
-                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                Uri.parse("package:${getApplication<Application>().packageName}"),
-            )
-        } else {
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.parse("package:${getApplication<Application>().packageName}")
-            }
-        }
-    }
-
-    fun buildAllFilesFallbackIntent(): Intent {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-        } else {
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.parse("package:${getApplication<Application>().packageName}")
-            }
-        }
-    }
-
-    private fun isAllFilesAccessGranted(): Boolean {
-        return Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
-    }
-
     private fun isMediaPermissionGranted(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                getApplication(),
-                Manifest.permission.READ_MEDIA_IMAGES,
-            ) == PackageManager.PERMISSION_GRANTED
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_IMAGES
         } else {
-            true
+            Manifest.permission.READ_EXTERNAL_STORAGE
         }
+        return ContextCompat.checkSelfPermission(
+            getApplication(),
+            permission,
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun isNotificationPermissionGranted(): Boolean {

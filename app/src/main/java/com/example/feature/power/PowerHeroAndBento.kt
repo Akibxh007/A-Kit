@@ -84,6 +84,8 @@ fun PowerHeroArcGauge(
     currentNowMa: Int = 0,
     gaugeSize: Dp = 236.dp,
     compactMode: Boolean = false,
+    animateFromZeroOnLaunch: Boolean = false,
+    sweepReady: Boolean = true,
 ) {
     Column(
         modifier = modifier,
@@ -107,6 +109,8 @@ fun PowerHeroArcGauge(
             statusBadgeText = statusText,
             bottomPillText = powerBadgeText,
             estimateText = estimateText,
+            animateFromZeroOnLaunch = animateFromZeroOnLaunch,
+            sweepReady = sweepReady,
         )
     }
 }

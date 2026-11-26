@@ -235,16 +235,13 @@ object SnapCleanCoordinator {
         _isWatcherRunning.value = running
     }
 
-    fun hasAllFilesAccess(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
-
     /**
-     * True zero-prompt screenshot deletion:
-     * - When MANAGE_EXTERNAL_STORAGE (All Files Access) is granted (or API < 30), resolves the
-     *   real filesystem path and deletes silently via File.delete() without ANY OS dialog, then
-     *   immediately invokes MediaScannerConnection.scanFile() so Gallery & MediaStore update.
-     * - Gracefully cleans up already-deleted files without crashing.
-     * - Falls back to ContentResolver / MediaStore consent ONLY if All Files Access is not granted.
+     * Scoped MediaStore screenshot deletion (Google Play Protect compliant):
+     * - Deletes directly via `ContentResolver.delete(uri)` when permitted (Android <= 10 or app-owned).
+     * - Cleanly prunes entries that were already deleted externally.
+     * - On Android 11+ scoped storage where system consent is required for third-party screenshots,
+     *   marks the item and returns [DeleteOutcome.RequiresUserConsent] so the UI launches
+     *   `MediaStore.createDeleteRequest` cleanly.
      */
     suspend fun attemptDeleteScreenshot(
         context: Context,
@@ -260,28 +257,6 @@ object SnapCleanCoordinator {
         val uri = runCatching { Uri.parse(item.uriString) }.getOrNull()
         val resolvedFile = resolveScreenshotFile(context, item, uri)
 
-        // 1. Zero-Prompt Silent Direct File Deletion path (when All Files Access is granted)
-        if (hasAllFilesAccess()) {
-            if (resolvedFile != null) {
-                if (!resolvedFile.exists()) {
-                    // File was already deleted externally — prune queue & refresh MediaStore cleanly
-                    refreshMediaStoreAfterDelete(context, resolvedFile.absolutePath, uri)
-                    repo.removeItemsAfterDelete(listOf(item.id), item.sizeBytes)
-                    SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
-                    return DeleteOutcome.Deleted
-                }
-
-                val deletedSilently = runCatching { resolvedFile.delete() }.getOrDefault(false)
-                if (deletedSilently || !resolvedFile.exists()) {
-                    refreshMediaStoreAfterDelete(context, resolvedFile.absolutePath, uri)
-                    repo.removeItemsAfterDelete(listOf(item.id), item.sizeBytes)
-                    SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
-                    return DeleteOutcome.Deleted
-                }
-            }
-        }
-
-        // 2. Fallback when All Files Access is not granted or file path couldn't be resolved directly
         if (uri == null) {
             repo.removeItemsAfterDelete(listOf(item.id), 0L)
             return DeleteOutcome.Deleted
@@ -297,7 +272,7 @@ object SnapCleanCoordinator {
                 SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
                 DeleteOutcome.Deleted
             } else {
-                if (!mediaUriExists(context, uri) && (resolvedFile == null || !resolvedFile.exists())) {
+                if (!mediaUriExists(context, uri)) {
                     repo.removeItemsAfterDelete(listOf(item.id), item.sizeBytes)
                     SnapCleanNotifications.cancelScreenshotNotification(context, item.id)
                     DeleteOutcome.Deleted
@@ -311,20 +286,6 @@ object SnapCleanCoordinator {
             DeleteOutcome.RequiresUserConsent(uri, item.id)
         } catch (t: Throwable) {
             DeleteOutcome.Failed(t.message ?: "Unable to delete file")
-        }
-    }
-
-    private fun refreshMediaStoreAfterDelete(context: Context, absolutePath: String, uri: Uri?) {
-        runCatching {
-            MediaScannerConnection.scanFile(
-                context.applicationContext,
-                arrayOf(absolutePath),
-                null,
-                null,
-            )
-        }
-        if (uri != null) {
-            runCatching { context.contentResolver.delete(uri, null, null) }
         }
     }
 

@@ -37,8 +37,8 @@ jobs:
 
       - name: Prepare Release APK
         run: |
-          VERSION_NAME=${GITHUB_REF_NAME:-v1.5.0}
-          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.5.0"; fi
+          VERSION_NAME=${GITHUB_REF_NAME:-v1.5.1}
+          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.5.1"; fi
           mkdir -p release-apk
           cp app/build/outputs/apk/debug/app-debug.apk "release-apk/A-Kit-${VERSION_NAME}.apk"
 
@@ -51,13 +51,13 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.0' }}
-          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.0' }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.1' }}
+          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.1' }}"
           body: |
-            ### A-Kit v1.5.0 — Rate-Limit-Proof In-App Updater & Polish
-            - **Zero-Rate-Limit Update Checker:** Added mandatory GitHub REST API headers (`User-Agent`, `Accept`, `X-GitHub-Api-Version`) plus automatic fallback to GitHub's public `releases.atom` feed and direct APK asset resolution so HTTP 403 rate limits never block updates.
-            - **Direct APK Download & Install:** Downloads updates into app external Downloads with live progress, smooth Unknown Sources permission handling, and `FileProvider` package installation.
-            - **Power Telemetry, Design Studio, SnapClean & Drop:** All v1.4.0 modules preserved intact.
+            ### A-Kit v1.5.1 — Play Protect Clean Build, Instant Startup & AmpereFlow Motion
+            - **Play Protect Safe Permissions & Updater:** Removed `REQUEST_INSTALL_PACKAGES`, `MANAGE_EXTERNAL_STORAGE`, and APK `FileProvider`; refactored SnapClean to scoped `MediaStore` and switched the GitHub Release updater to clean browser-assisted APK download.
+            - **Atomic / Orbital Swirl Gauge Polish:** Removed the extra static inner circle so only rotating elliptical orbital paths surround the centered battery percentage.
+            - **Zero-Delay Cold Start & Splash Motion:** Added `androidx.core:core-splashscreen` (`#000000` AMOLED background), async post-frame initialization, a branded spring splash overlay, and staggered Power dashboard entrance + gauge sweep animations.
           files: release-apk/*.apk
           draft: false
           prerelease: false

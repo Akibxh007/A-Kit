@@ -26,8 +26,7 @@ class SnapCleanSweepWorker(
         val now = System.currentTimeMillis()
 
         val expired = items.filter { item ->
-            (item.status == ScreenshotStatus.PENDING_DELETE ||
-                (item.status == ScreenshotStatus.NEEDS_USER_CONFIRMATION && SnapCleanCoordinator.hasAllFilesAccess())) &&
+            item.status == ScreenshotStatus.PENDING_DELETE &&
                 item.expiresAtMs > 0L &&
                 item.expiresAtMs <= now
         }
@@ -45,7 +44,7 @@ class SnapCleanSweepWorker(
 
         repo.recordSweepTimestamp(now)
 
-        if (consentNeededCount > 0 && !SnapCleanCoordinator.hasAllFilesAccess()) {
+        if (consentNeededCount > 0) {
             SnapCleanNotifications.showConsentNeededNotification(applicationContext, consentNeededCount)
         }
 

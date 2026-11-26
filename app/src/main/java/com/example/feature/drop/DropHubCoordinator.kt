@@ -9,7 +9,6 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -183,11 +182,9 @@ object DropHubCoordinator {
     }
 
     /**
-     * Streams an incoming Host upload (`POST /api/upload`) in 64KB chunks directly to a
-     * FileProvider-backed file inside `externalFilesDir(Download)/A-Kit` so the Host UI can:
-     * 1. Emit live electric-cyan transfer progress every ~150ms.
-     * 2. Open PDFs, APKs, images, and videos immediately via `FileProvider.getUriForFile(...)`.
-     * 3. Export/confirm to public `Downloads/A-Kit` via MediaStore when the user taps **Save**.
+     * Streams an incoming Host upload (`POST /api/upload`) in 64KB chunks directly to public
+     * `MediaStore.Downloads/A-Kit` on Android 10+ (producing a native shareable `content://` URI
+     * with zero FileProvider required), emitting live transfer progress every ~150ms.
      */
     fun saveIncomingHostUpload(
         context: Context,
@@ -211,27 +208,40 @@ object DropHubCoordinator {
         )
 
         return try {
-            saveViaAppExternalDownloads(
-                context = context,
-                fileName = cleanName,
-                mimeType = safeMime,
-                inputStream = inputStream,
-                expectedBytes = expectedBytes,
-                registerInHostHub = true,
-                locationLabel = "Received from Peer",
-                markSavedToDownloads = false,
-                onProgress = { transferred, total, speedBps ->
-                    updateHostTransfer(
-                        DropTransferProgress(
-                            fileName = cleanName,
-                            isSending = false,
-                            bytesTransferred = transferred,
-                            totalBytes = total,
-                            speedBytesPerSec = speedBps,
-                        ),
-                    )
-                },
-            )
+            val progressCallback: (Long, Long, Float) -> Unit = { transferred, total, speedBps ->
+                updateHostTransfer(
+                    DropTransferProgress(
+                        fileName = cleanName,
+                        isSending = false,
+                        bytesTransferred = transferred,
+                        totalBytes = total,
+                        speedBytesPerSec = speedBps,
+                    ),
+                )
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                saveViaMediaStoreDownloads(
+                    context = context,
+                    fileName = cleanName,
+                    mimeType = safeMime,
+                    inputStream = inputStream,
+                    expectedBytes = expectedBytes,
+                    registerInHostHub = true,
+                    onProgress = progressCallback,
+                )
+            } else {
+                saveViaAppExternalDownloads(
+                    context = context,
+                    fileName = cleanName,
+                    mimeType = safeMime,
+                    inputStream = inputStream,
+                    expectedBytes = expectedBytes,
+                    registerInHostHub = true,
+                    locationLabel = "Saved to Downloads/A-Kit",
+                    markSavedToDownloads = true,
+                    onProgress = progressCallback,
+                )
+            }
         } finally {
             clearHostTransfer()
         }
@@ -420,11 +430,7 @@ object DropHubCoordinator {
             }
             val finalFile = resolveNonCollidingFile(targetDir, fileName)
             val savedFile = if (tempFile.renameTo(finalFile)) finalFile else tempFile
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.drop.fileprovider",
-                savedFile,
-            )
+            val uri = Uri.fromFile(savedFile)
             buildAndMaybeRegisterFile(
                 fileName = savedFile.name,
                 mimeType = mimeType,
