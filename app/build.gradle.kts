@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.akit.vqmrxz"
     minSdk = 26
     targetSdk = 35
-    versionCode = 7
-    versionName = "1.5.1"
+    versionCode = 8
+    versionName = "1.5.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -26,11 +26,23 @@ android {
   // and updating Android apps in AI Studio.
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      val ksPath = System.getenv("KEYSTORE_FILE")
+      val p12File = ksPath
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { path -> listOf(file(path), rootProject.file(path)).firstOrNull { it.exists() } }
+      if (p12File != null) {
+        storeFile = p12File
+        storeType = "PKCS12"
+        storePassword = System.getenv("KEY_STORE_PASSWORD")
+        keyAlias = System.getenv("ALIAS")
+        keyPassword = System.getenv("KEY_PASSWORD")
+      } else {
+        val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+        storeFile = file(keystorePath)
+        storePassword = System.getenv("STORE_PASSWORD")
+        keyAlias = "upload"
+        keyPassword = System.getenv("KEY_PASSWORD")
+      }
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
@@ -44,6 +56,7 @@ android {
     release {
       isCrunchPngs = false
       isMinifyEnabled = false
+      isShrinkResources = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.

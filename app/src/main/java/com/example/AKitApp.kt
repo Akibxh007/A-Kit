@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Application
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Spring
@@ -144,7 +145,10 @@ class AKitAppViewModel(
     }
 
     fun checkForUpdates(silent: Boolean) {
-        if (_updateState.value.status == UpdateCheckStatus.CHECKING) return
+        val current = _updateState.value
+        if (current.status == UpdateCheckStatus.CHECKING || current.status == UpdateCheckStatus.DOWNLOADING) {
+            return
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             if (!silent) {
@@ -162,6 +166,9 @@ class AKitAppViewModel(
                             status = UpdateCheckStatus.UPDATE_AVAILABLE,
                             release = result.release,
                             showSheet = true,
+                            downloadedBytes = 0L,
+                            totalBytes = result.release.apkSizeBytes,
+                            downloadedApkUri = null,
                             statusMessage = "Version ${result.release.tagName} available",
                         )
                     }
@@ -191,6 +198,70 @@ class AKitAppViewModel(
                 }
             }
         }
+    }
+
+    fun downloadUpdateToDownloads() {
+        val release = _updateState.value.release ?: return
+        if (_updateState.value.status == UpdateCheckStatus.DOWNLOADING) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _updateState.update {
+                it.copy(
+                    status = UpdateCheckStatus.DOWNLOADING,
+                    downloadedBytes = 0L,
+                    totalBytes = release.apkSizeBytes,
+                    downloadedApkUri = null,
+                    statusMessage = "Saving ${release.apkFileName} to Downloads...",
+                )
+            }
+            when (
+                val result = AppUpdateManager.downloadApkToPublicDownloads(
+                    context = getApplication(),
+                    release = release,
+                ) { downloaded, total ->
+                    _updateState.update {
+                        it.copy(
+                            downloadedBytes = downloaded,
+                            totalBytes = total,
+                        )
+                    }
+                }
+            ) {
+                is AppUpdateManager.DownloadResult.SavedToDownloads -> {
+                    _updateState.update {
+                        it.copy(
+                            status = UpdateCheckStatus.READY_TO_INSTALL,
+                            downloadedApkUri = result.contentUri.toString(),
+                            statusMessage = "Saved ${result.displayName} to Downloads",
+                        )
+                    }
+                    AppUpdateManager.launchPackageInstaller(getApplication(), result.contentUri)
+                }
+                AppUpdateManager.DownloadResult.OpenedInBrowser -> {
+                    _updateState.update {
+                        it.copy(
+                            status = UpdateCheckStatus.UPDATE_AVAILABLE,
+                            showSheet = false,
+                            statusMessage = "Opened APK download in browser",
+                        )
+                    }
+                }
+                is AppUpdateManager.DownloadResult.Failed -> {
+                    _updateState.update {
+                        it.copy(
+                            status = UpdateCheckStatus.OFFLINE_OR_ERROR,
+                            statusMessage = result.reason,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun installReadyApk() {
+        val uriString = _updateState.value.downloadedApkUri ?: return
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return
+        AppUpdateManager.launchPackageInstaller(getApplication(), uri)
     }
 
     fun openUpdateSheet() {
@@ -409,6 +480,8 @@ fun AKitApp(
             if (updateState.showSheet && updateState.release != null) {
                 UpdateModalSheet(
                     updateState = updateState,
+                    onDownloadUpdate = appViewModel::downloadUpdateToDownloads,
+                    onInstallReadyApk = appViewModel::installReadyApk,
                     onDismiss = appViewModel::dismissUpdateSheet,
                 )
             }

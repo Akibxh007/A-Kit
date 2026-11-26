@@ -685,10 +685,12 @@ fun SettingsModalSheet(
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
 
-                    // Manual "Check for Updates" Trigger (GitHub Releases Browser Updater)
+                    // Manual "Check for Updates" Trigger (GitHub Releases Signed APK Updater)
                     val isChecking = updateState.status == UpdateCheckStatus.CHECKING
                     val hasUpdate = updateState.release != null &&
-                        updateState.status == UpdateCheckStatus.UPDATE_AVAILABLE
+                        (updateState.status == UpdateCheckStatus.UPDATE_AVAILABLE ||
+                            updateState.status == UpdateCheckStatus.DOWNLOADING ||
+                            updateState.status == UpdateCheckStatus.READY_TO_INSTALL)
 
                     Surface(
                         onClick = {
@@ -757,7 +759,7 @@ fun SettingsModalSheet(
                                     )
                                     Text(
                                         text = updateState.statusMessage
-                                            ?: "GitHub Releases • Safe browser download",
+                                            ?: "GitHub Releases • Signed APK updater",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -776,7 +778,8 @@ fun SettingsModalSheet(
                                 Text(
                                     text = when {
                                         isChecking -> "CHECKING"
-                                        hasUpdate -> "VIEW"
+                                        updateState.status == UpdateCheckStatus.READY_TO_INSTALL -> "INSTALL"
+                                        hasUpdate -> "UPDATE"
                                         else -> "CHECK"
                                     },
                                     style = MonoLabelStyle,

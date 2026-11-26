@@ -1,4 +1,4 @@
-name: Build & Release A-Kit APK
+name: Build & Release A-Kit Signed APK
 
 on:
   push:
@@ -24,40 +24,60 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Generate Debug Keystore
-        run: keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Build Debug APK
-        run: gradle assembleDebug
-
-      - name: Prepare Release APK
+      - name: Decode PKCS#12 Release Signing Key
         run: |
-          VERSION_NAME=${GITHUB_REF_NAME:-v1.5.1}
-          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.5.1"; fi
-          mkdir -p release-apk
-          cp app/build/outputs/apk/debug/app-debug.apk "release-apk/A-Kit-${VERSION_NAME}.apk"
+          if [ -z "${{ secrets.SIGNING_KEY }}" ]; then
+            echo "ERROR: SIGNING_KEY secret is not configured in GitHub repository secrets."
+            exit 1
+          fi
+          echo "${{ secrets.SIGNING_KEY }}" | tr -d '\n\r ' | base64 -d > app/release.p12
 
-      - name: Upload A-Kit APK
+      - name: Build Signed Release APK
+        env:
+          KEYSTORE_FILE: app/release.p12
+          ALIAS: ${{ secrets.ALIAS }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleRelease
+          else
+            gradle assembleRelease
+          fi
+
+      - name: Clean up Release Keystore
+        if: always()
+        run: rm -f app/release.p12
+
+      - name: Prepare Signed Release APK
+        run: |
+          VERSION_NAME=${GITHUB_REF_NAME:-v1.5.2}
+          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.5.2"; fi
+          mkdir -p release-apk
+          cp app/build/outputs/apk/release/app-release.apk "release-apk/A-Kit-${VERSION_NAME}.apk"
+
+      - name: Upload A-Kit Signed Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: A-Kit-Debug-APK
+          name: A-Kit-Release-APK
           path: release-apk/*.apk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.1' }}
-          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.1' }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.2' }}
+          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.2' }}"
           body: |
-            ### A-Kit v1.5.1 — Play Protect Clean Build, Instant Startup & AmpereFlow Motion
-            - **Play Protect Safe Permissions & Updater:** Removed `REQUEST_INSTALL_PACKAGES`, `MANAGE_EXTERNAL_STORAGE`, and APK `FileProvider`; refactored SnapClean to scoped `MediaStore` and switched the GitHub Release updater to clean browser-assisted APK download.
-            - **Atomic / Orbital Swirl Gauge Polish:** Removed the extra static inner circle so only rotating elliptical orbital paths surround the centered battery percentage.
-            - **Zero-Delay Cold Start & Splash Motion:** Added `androidx.core:core-splashscreen` (`#000000` AMOLED background), async post-frame initialization, a branded spring splash overlay, and staggered Power dashboard entrance + gauge sweep animations.
+            ### A-Kit v1.5.2 — Signed Release APK Pipeline & Seamless In-Place Updates
+            - **Signed Release APKs (PKCS#12):** Switched CI/CD from unsigned debug builds to production-signed `app-release.apk` (`A-Kit-v1.5.2.apk`) so Google Play Protect recognizes consistent signing identity and future updates install cleanly over existing versions without package signature conflicts.
+            - **Play Protect Safe Permissions:** Keeps `MANAGE_EXTERNAL_STORAGE` and `REQUEST_INSTALL_PACKAGES` completely removed with scoped `MediaStore` storage.
+            - **Public Downloads In-App Updater:** Rate-limit-proof GitHub release checker (`User-Agent` headers + `releases.atom` fallback) downloads updates directly to public `Downloads` via `MediaStore.Downloads` and launches the Android package installer smoothly.
           files: release-apk/*.apk
           draft: false
           prerelease: false
