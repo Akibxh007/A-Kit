@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <external-files-path
+        name="akit_external_downloads"
+        path="Download/" />
+    <external-files-path
         name="akit_drop_downloads"
         path="Download/A-Kit/" />
     <files-path

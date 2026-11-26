@@ -41,7 +41,7 @@
 ## 📥 Installation
 
 1. Go to the [**Releases**](https://github.com/Akibxh007/A-Kit/releases/latest) page.
-2. Download the latest **`A-Kit-v1.4.0.apk`** file directly.
+2. Download the latest **`A-Kit-v1.5.0.apk`** file directly.
 3. Open the APK on your Android device and allow **Install from Unknown Sources** if prompted.
 
 ---
