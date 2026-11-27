@@ -1,5 +1,6 @@
 package com.example.feature.update
 
+import android.content.Context
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,7 +59,7 @@ import kotlin.math.roundToInt
 fun UpdateModalSheet(
     updateState: AppUpdateState,
     onDownloadUpdate: () -> Unit,
-    onInstallReadyApk: () -> Unit,
+    onInstallReadyApk: (Context) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val release = updateState.release ?: return
@@ -71,7 +72,7 @@ fun UpdateModalSheet(
 
     val isDownloading = updateState.status == UpdateCheckStatus.DOWNLOADING
     val isReadyToInstall = updateState.status == UpdateCheckStatus.READY_TO_INSTALL &&
-        !updateState.downloadedApkUri.isNullOrBlank()
+        (!updateState.downloadedApkPath.isNullOrBlank() || !updateState.downloadedApkUri.isNullOrBlank())
 
     ModalBottomSheet(
         onDismissRequest = { if (!isDownloading) onDismiss() },
@@ -359,7 +360,7 @@ fun UpdateModalSheet(
                 Button(
                     onClick = {
                         if (isReadyToInstall) {
-                            onInstallReadyApk()
+                            onInstallReadyApk(context)
                         } else {
                             onDownloadUpdate()
                         }

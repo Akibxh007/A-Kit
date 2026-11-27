@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -73,6 +74,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class AKitAppViewModel(
     application: Application,
@@ -169,6 +171,7 @@ class AKitAppViewModel(
                             downloadedBytes = 0L,
                             totalBytes = result.release.apkSizeBytes,
                             downloadedApkUri = null,
+                            downloadedApkPath = null,
                             statusMessage = "Version ${result.release.tagName} available",
                         )
                     }
@@ -211,6 +214,7 @@ class AKitAppViewModel(
                     downloadedBytes = 0L,
                     totalBytes = release.apkSizeBytes,
                     downloadedApkUri = null,
+                    downloadedApkPath = null,
                     statusMessage = "Saving ${release.apkFileName} to Downloads...",
                 )
             }
@@ -231,11 +235,18 @@ class AKitAppViewModel(
                     _updateState.update {
                         it.copy(
                             status = UpdateCheckStatus.READY_TO_INSTALL,
-                            downloadedApkUri = result.contentUri.toString(),
+                            downloadedApkUri = result.contentUri?.toString(),
+                            downloadedApkPath = result.localFilePath,
                             statusMessage = "Saved ${result.displayName} to Downloads",
                         )
                     }
-                    AppUpdateManager.launchPackageInstaller(getApplication(), result.contentUri)
+                    withContext(Dispatchers.Main) {
+                        AppUpdateManager.launchPackageInstaller(
+                            context = getApplication(),
+                            apkFilePath = result.localFilePath,
+                            fallbackUri = result.contentUri,
+                        )
+                    }
                 }
                 AppUpdateManager.DownloadResult.OpenedInBrowser -> {
                     _updateState.update {
@@ -258,10 +269,14 @@ class AKitAppViewModel(
         }
     }
 
-    fun installReadyApk() {
-        val uriString = _updateState.value.downloadedApkUri ?: return
-        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return
-        AppUpdateManager.launchPackageInstaller(getApplication(), uri)
+    fun installReadyApk(callerContext: Context = getApplication()) {
+        val current = _updateState.value
+        val uri = current.downloadedApkUri?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        AppUpdateManager.launchPackageInstaller(
+            context = callerContext,
+            apkFilePath = current.downloadedApkPath,
+            fallbackUri = uri,
+        )
     }
 
     fun openUpdateSheet() {
@@ -493,7 +508,7 @@ fun AKitApp(
                 UpdateModalSheet(
                     updateState = updateState,
                     onDownloadUpdate = appViewModel::downloadUpdateToDownloads,
-                    onInstallReadyApk = appViewModel::installReadyApk,
+                    onInstallReadyApk = { callerContext -> appViewModel.installReadyApk(callerContext) },
                     onDismiss = appViewModel::dismissUpdateSheet,
                 )
             }

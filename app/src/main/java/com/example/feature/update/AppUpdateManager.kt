@@ -7,9 +7,14 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Xml
+import android.widget.Toast
 import androidx.compose.runtime.Immutable
+import androidx.core.content.FileProvider
 import androidx.core.text.HtmlCompat
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +22,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
 import java.io.BufferedInputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStream
 import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -52,6 +60,7 @@ data class AppUpdateState(
     val downloadedBytes: Long = 0L,
     val totalBytes: Long = 0L,
     val downloadedApkUri: String? = null,
+    val downloadedApkPath: String? = null,
     val statusMessage: String? = null,
 ) {
     val downloadProgress: Float
@@ -88,7 +97,11 @@ object AppUpdateManager {
     }
 
     sealed interface DownloadResult {
-        data class SavedToDownloads(val contentUri: Uri, val displayName: String) : DownloadResult
+        data class SavedToDownloads(
+            val contentUri: Uri?,
+            val localFilePath: String,
+            val displayName: String,
+        ) : DownloadResult
         data object OpenedInBrowser : DownloadResult
         data class Failed(val reason: String) : DownloadResult
     }
@@ -118,10 +131,10 @@ object AppUpdateManager {
     }
 
     /**
-     * Downloads the signed release APK directly to public `Environment.DIRECTORY_DOWNLOADS` via
-     * scoped `MediaStore.Downloads` on Android 10+ (zero storage permissions, zero `FileProvider`,
-     * and zero `REQUEST_INSTALL_PACKAGES` required). On Android 8–9, opens the verified download
-     * URL cleanly in the system browser.
+     * Downloads the signed release APK to public `Environment.DIRECTORY_DOWNLOADS` (via scoped
+     * `MediaStore.Downloads` on Android 10+ or direct public Downloads on Android 8–9) while also
+     * mirroring an installable copy in `cacheDir/updates/` so `FileProvider.getUriForFile(...)`
+     * always yields a readable `content://` URI across all Android versions and OEMs.
      */
     suspend fun downloadApkToPublicDownloads(
         context: Context,
@@ -135,28 +148,51 @@ object AppUpdateManager {
                 DownloadResult.Failed("No downloadable APK URL found.")
             }
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            return@withContext if (openUrlInBrowser(context, downloadUrl)) {
-                DownloadResult.OpenedInBrowser
-            } else {
-                DownloadResult.Failed("Unable to open browser to download APK.")
-            }
-        }
-
         val safeFileName = release.apkFileName
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .ifBlank { "A-Kit-${release.tagName}.apk" }
 
-        val resolver = context.contentResolver
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, safeFileName)
-            put(MediaStore.Downloads.MIME_TYPE, APK_MIME_TYPE)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            put(MediaStore.Downloads.IS_PENDING, 1)
+        val updatesCacheDir = File(context.cacheDir, "updates").apply { mkdirs() }
+        // Clean stale APKs from cache so storage never grows unbounded
+        updatesCacheDir.listFiles()?.forEach { old ->
+            if (old.isFile && old.name != safeFileName) {
+                runCatching { old.delete() }
+            }
+        }
+        val cacheApkFile = File(updatesCacheDir, safeFileName)
+        if (cacheApkFile.exists()) {
+            runCatching { cacheApkFile.delete() }
         }
 
-        val targetUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return@withContext DownloadResult.Failed("Unable to create file in Downloads.")
+        val resolver = context.contentResolver
+        var mediaStoreUri: Uri? = null
+        var publicDownloadsStream: OutputStream? = null
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, safeFileName)
+                put(MediaStore.Downloads.MIME_TYPE, APK_MIME_TYPE)
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            mediaStoreUri = runCatching {
+                resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            }.getOrNull()
+            if (mediaStoreUri != null) {
+                publicDownloadsStream = runCatching {
+                    resolver.openOutputStream(mediaStoreUri)
+                }.getOrNull()
+            }
+        } else {
+            runCatching {
+                @Suppress("DEPRECATION")
+                val publicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (publicDir != null && (publicDir.exists() || publicDir.mkdirs())) {
+                    val outFile = File(publicDir, safeFileName)
+                    publicDownloadsStream = FileOutputStream(outFile)
+                }
+            }
+        }
 
         var connection: HttpURLConnection? = null
         try {
@@ -165,7 +201,8 @@ object AppUpdateManager {
                 method = "GET",
             )
             if (connection.responseCode !in 200..299) {
-                runCatching { resolver.delete(targetUri, null, null) }
+                publicDownloadsStream?.runCatching { close() }
+                mediaStoreUri?.let { runCatching { resolver.delete(it, null, null) } }
                 return@withContext DownloadResult.Failed("Download server returned HTTP ${connection.responseCode}.")
             }
 
@@ -174,36 +211,78 @@ object AppUpdateManager {
             var lastEmitMs = 0L
 
             BufferedInputStream(connection.inputStream, DOWNLOAD_BUFFER_SIZE).use { input ->
-                resolver.openOutputStream(targetUri)?.use { output ->
-                    val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        totalRead += read
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitMs >= 100L || (contentLength > 0L && totalRead >= contentLength)) {
-                            lastEmitMs = now
-                            onProgress(totalRead, contentLength)
+                FileOutputStream(cacheApkFile).use { cacheOutput ->
+                    try {
+                        val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            cacheOutput.write(buffer, 0, read)
+                            if (publicDownloadsStream != null) {
+                                try {
+                                    publicDownloadsStream?.write(buffer, 0, read)
+                                } catch (_: Exception) {
+                                    publicDownloadsStream?.runCatching { close() }
+                                    publicDownloadsStream = null
+                                }
+                            }
+                            totalRead += read
+                            val now = System.currentTimeMillis()
+                            if (now - lastEmitMs >= 100L || (contentLength > 0L && totalRead >= contentLength)) {
+                                lastEmitMs = now
+                                onProgress(totalRead, contentLength)
+                            }
                         }
+                        cacheOutput.flush()
+                        publicDownloadsStream?.runCatching { flush() }
+                    } finally {
+                        publicDownloadsStream?.runCatching { close() }
                     }
-                    output.flush()
-                } ?: error("Cannot write to public Downloads output stream")
+                }
             }
 
             if (totalRead <= 0L) {
-                runCatching { resolver.delete(targetUri, null, null) }
+                runCatching { cacheApkFile.delete() }
+                mediaStoreUri?.let { runCatching { resolver.delete(it, null, null) } }
                 return@withContext DownloadResult.Failed("Downloaded APK was empty.")
             }
 
-            val publishValues = ContentValues().apply {
-                put(MediaStore.Downloads.IS_PENDING, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && mediaStoreUri != null) {
+                val publishValues = ContentValues().apply {
+                    put(MediaStore.Downloads.IS_PENDING, 0)
+                }
+                runCatching { resolver.update(mediaStoreUri, publishValues, null, null) }
             }
-            resolver.update(targetUri, publishValues, null, null)
+
+            @Suppress("DEPRECATION")
+            val publicFile = runCatching {
+                File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    safeFileName,
+                )
+            }.getOrNull()
+
+            val preferredInstallFile = if (
+                publicFile != null &&
+                publicFile.exists() &&
+                publicFile.canRead() &&
+                publicFile.length() == totalRead
+            ) {
+                publicFile
+            } else {
+                cacheApkFile
+            }
+
             onProgress(totalRead, maxOf(contentLength, totalRead))
-            DownloadResult.SavedToDownloads(contentUri = targetUri, displayName = safeFileName)
+            DownloadResult.SavedToDownloads(
+                contentUri = mediaStoreUri,
+                localFilePath = preferredInstallFile.absolutePath,
+                displayName = safeFileName,
+            )
         } catch (t: Exception) {
-            runCatching { resolver.delete(targetUri, null, null) }
+            publicDownloadsStream?.runCatching { close() }
+            runCatching { cacheApkFile.delete() }
+            mediaStoreUri?.let { runCatching { resolver.delete(it, null, null) } }
             DownloadResult.Failed(t.message ?: "Download interrupted. Check your connection.")
         } finally {
             connection?.disconnect()
@@ -211,22 +290,99 @@ object AppUpdateManager {
     }
 
     /**
-     * Launches the Android package installer directly for the public `MediaStore.Downloads` APK URI,
-     * falling back to opening the system Downloads view if no handler accepts direct APK launch.
+     * Launches the Android Package Installer for the downloaded APK:
+     * 1. On Android 8+ (API 26+), checks `packageManager.canRequestPackageInstalls()` first — if
+     *    not yet granted, shows a helpful toast and opens `ACTION_MANAGE_UNKNOWN_APP_SOURCES` for
+     *    one-tap permission approval.
+     * 2. Generates a `content://` URI via `FileProvider.getUriForFile(...)` for the downloaded APK
+     *    in `Environment.DIRECTORY_DOWNLOADS` (with automatic fallback to our cached mirror if
+     *    scoped storage blocks FUSE read) and launches `Intent.ACTION_VIEW` with
+     *    `application/vnd.android.package-archive`.
+     * 3. Falls back to opening the system Downloads folder if any OEM restriction occurs.
      */
-    fun launchPackageInstaller(context: Context, apkUri: Uri): Boolean {
-        val launchedInstaller = runCatching {
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(apkUri, APK_MIME_TYPE)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    fun launchPackageInstaller(
+        context: Context,
+        apkFilePath: String?,
+        fallbackUri: Uri? = null,
+    ): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            showToastOnMain(
+                context = context,
+                message = "Allow \"Install unknown apps\" for A-Kit, then tap Install APK again.",
+            )
+            val unknownSourcesIntent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}"),
+            ).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            context.startActivity(installIntent)
-            true
-        }.getOrDefault(false)
+            return runCatching {
+                context.startActivity(unknownSourcesIntent)
+                true
+            }.getOrDefault(false)
+        }
 
-        if (launchedInstaller) return true
+        val authority = "${context.packageName}.fileprovider"
+        val candidateFiles = buildList {
+            if (!apkFilePath.isNullOrBlank()) {
+                val primary = File(apkFilePath)
+                add(primary)
+                val cachedMirror = File(File(context.cacheDir, "updates"), primary.name)
+                if (cachedMirror.absolutePath != primary.absolutePath) {
+                    add(cachedMirror)
+                }
+            }
+            File(context.cacheDir, "updates")
+                .listFiles { f -> f.isFile && f.name.endsWith(".apk", ignoreCase = true) }
+                ?.maxByOrNull { it.lastModified() }
+                ?.let { add(it) }
+        }.distinctBy { it.absolutePath }
+
+        var apkUri: Uri? = null
+        for (file in candidateFiles) {
+            if (file.exists() && file.canRead() && file.length() > 0L) {
+                val providerUri = runCatching {
+                    FileProvider.getUriForFile(context, authority, file)
+                }.getOrNull()
+                if (providerUri != null) {
+                    apkUri = providerUri
+                    break
+                }
+            }
+        }
+        if (apkUri == null) {
+            apkUri = fallbackUri
+        }
+
+        if (apkUri != null) {
+            try {
+                val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(apkUri, APK_MIME_TYPE)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(installIntent)
+                return true
+            } catch (_: Exception) {
+                // Fall back to system Downloads below if OEM restricts direct installer intent
+            }
+        }
+
+        showToastOnMain(
+            context = context,
+            message = "Opening Downloads folder — tap the A-Kit APK to install.",
+        )
         return openDownloadsFolder(context)
+    }
+
+    private fun showToastOnMain(context: Context, message: String) {
+        val appContext = context.applicationContext
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Toast.makeText(appContext, message, Toast.LENGTH_LONG).show()
+        } else {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(appContext, message, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     fun openDownloadsFolder(context: Context): Boolean {

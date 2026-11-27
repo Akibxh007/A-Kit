@@ -1010,14 +1010,20 @@ private fun MiniClockStyleThumbnail(
         } else {
             val previewFontSize = when (style) {
                 ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> 22.sp
-                ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> 25.sp
+                ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> 30.sp
                 else -> 27.sp
+            }
+            val previewDigits = when (style) {
+                ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> "7:19"
+                ClockNumberStyle.BOLD_ROUNDED_SANS -> "7:20"
+                ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> "7:21"
+                else -> "7:20"
             }
             StyledClockDigitsText(
                 clockStyle = style,
-                timeText = "7:20",
+                timeText = previewDigits,
                 fontSize = previewFontSize,
-                strokeWidthDp = 1.4.dp,
+                strokeWidthDp = 1.3.dp,
                 primaryColor = MaterialTheme.colorScheme.onSurface,
                 accent = accentColor,
             )

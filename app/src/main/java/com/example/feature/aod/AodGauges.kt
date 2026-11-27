@@ -183,9 +183,16 @@ fun AodSpeedometerGauge(
     }
     val powerReadoutUnit = if (showWattsInsteadOfMa) "W" else "mA"
 
-    val mainNumber = if (percentagePrimaryDisplay) integerPart else powerReadoutValue
+    val isCleanRingGauge = gaugeStyle == GaugeStyle.DOUBLE_RING_NEON_ARC ||
+        gaugeStyle == GaugeStyle.BRAIDED_WAVE_HELIX
+
+    val mainNumber = if (percentagePrimaryDisplay) {
+        if (isCleanRingGauge) "${levelPercent.coerceIn(0f, 100f).roundToInt()}" else integerPart
+    } else {
+        powerReadoutValue
+    }
     val mainSuffix = if (percentagePrimaryDisplay) {
-        if (compactMode) "%" else "$decimalPart%"
+        if (compactMode || isCleanRingGauge) "%" else "$decimalPart%"
     } else {
         " $powerReadoutUnit"
     }
@@ -343,7 +350,8 @@ fun AodSpeedometerGauge(
                 )
             }
 
-            if (!compactMode && gaugeStyle != GaugeStyle.ANALOG_NEEDLE_DIAL &&
+            if (!compactMode && !isCleanRingGauge &&
+                gaugeStyle != GaugeStyle.ANALOG_NEEDLE_DIAL &&
                 gaugeStyle != GaugeStyle.HORIZONTAL_BAR_STACK &&
                 gaugeStyle != GaugeStyle.INVERTED_FUNNEL_BARS
             ) {

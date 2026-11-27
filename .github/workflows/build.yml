@@ -57,8 +57,8 @@ jobs:
 
       - name: Prepare Signed Release APK
         run: |
-          VERSION_NAME=${GITHUB_REF_NAME:-v1.5.3}
-          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.5.3"; fi
+          VERSION_NAME=${GITHUB_REF_NAME:-v1.5.4}
+          if [[ "$VERSION_NAME" == "main" || "$VERSION_NAME" == "master" ]]; then VERSION_NAME="v1.5.4"; fi
           mkdir -p release-apk
           cp app/build/outputs/apk/release/app-release.apk "release-apk/A-Kit-${VERSION_NAME}.apk"
 
@@ -71,14 +71,13 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.3' }}
-          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.3' }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.4' }}
+          name: "A-Kit ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.5.4' }}"
           body: |
-            ### A-Kit v1.5.3 — New AMOLED AOD Clocks, Neon Gauges & Telemetry Card Styles
-            - **3 New AOD Clock Styles (9 Total):** Added Editorial Decorative Serif (with vintage inline stroke accents), Bold Rounded Sans, and Geometric Tech Block with live Design Studio previews.
-            - **2 New Battery & Wattage Gauges (14 Total):** Added Double-Ring Neon Arc (with glowing radial tip cap) and animated Braided Wave Helix Ring.
-            - **3 New Telemetry Card Layouts (7 Total):** Added Icon-Top Outlined Cards, Minimal Circular Badges, and Top-Glow Gradient Cards, plus a direct clickable `More Info ↗` shortcut to full battery telemetry.
-            - **Signed Release Pipeline (PKCS#12):** Built and signed as `A-Kit-v1.5.3.apk` for Play Protect compatibility and seamless in-place updates.
+            ### A-Kit v1.5.4 — Direct In-App APK Installer Fix & Vintage Decorative Serif Clock
+            - **Direct In-App APK Installation:** Restored `REQUEST_INSTALL_PACKAGES`, added `FileProvider` (`file_paths.xml`), and added one-tap `canRequestPackageInstalls()` permission guidance so tapping **Install APK** launches Android's Package Installer cleanly on Android 8–15 & HyperOS.
+            - **Ornate Vintage Decorative Serif Clock:** Upgraded Editorial Decorative Serif to bundled high-contrast **Abril Fatface** (`88.sp`, tight `-2.sp` tracking) with `16.sp` Medium sans-serif date subtitle and crisp `26%` / `DISCHARGING` Double-Ring Neon Cyan (`#00E5FF`) gauge styling.
+            - **Signed Release Pipeline (PKCS#12):** Built and signed as `A-Kit-v1.5.4.apk` for consistent in-place updates.
           files: release-apk/*.apk
           draft: false
           prerelease: false

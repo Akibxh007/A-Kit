@@ -104,7 +104,7 @@ enum class AccentSwatch(val storageKey: String, val label: String, val argbInt: 
     CORAL_RED("coral_red", "Coral", 0xFFFF3B5C.toInt()),
     MAGENTA("magenta", "Magenta", 0xFFD946EF.toInt()),
     INDIGO("indigo", "Indigo", 0xFF6366F1.toInt()),
-    CYAN("cyan", "Cyan", 0xFF06B6D4.toInt()),
+    CYAN("cyan", "Cyan", 0xFF00E5FF.toInt()),
     MINT("mint", "Mint", 0xFF10B981.toInt()),
     LIME("lime", "Lime", 0xFF84CC16.toInt()),
     AMBER("amber", "Amber", 0xFFF59E0B.toInt()),

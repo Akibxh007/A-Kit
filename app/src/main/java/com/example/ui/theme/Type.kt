@@ -64,6 +64,18 @@ val OrbitronFontFamily = FontFamily(
     Font(R.font.orbitron, FontWeight.ExtraBold),
 )
 
+val AbrilFatfaceFontFamily = FontFamily(
+    Font(R.font.abril_fatface, FontWeight.Normal),
+    Font(R.font.abril_fatface, FontWeight.Bold),
+    Font(R.font.abril_fatface, FontWeight.ExtraBold),
+)
+
+val CleanDateSansFontFamily = FontFamily(
+    Font(R.font.plus_jakarta_sans, FontWeight.Normal),
+    Font(R.font.plus_jakarta_sans, FontWeight.Medium),
+    Font(R.font.plus_jakarta_sans, FontWeight.SemiBold),
+)
+
 // Compatibility aliases mapped cleanly to our new font pairing
 val SpaceGroteskFontFamily = MontserratAlternatesFontFamily
 val PlusJakartaSansFontFamily = RobotoCondensedFontFamily

@@ -58,8 +58,9 @@ import com.example.data.AodMetricSlot
 import com.example.data.BatteryDetailsCardStyle
 import com.example.data.ClockNumberStyle
 import com.example.feature.power.PowerTelemetryState
+import com.example.ui.theme.AbrilFatfaceFontFamily
 import com.example.ui.theme.BodoniModaFontFamily
-import com.example.ui.theme.CinzelDecorativeFontFamily
+import com.example.ui.theme.CleanDateSansFontFamily
 import com.example.ui.theme.FredokaFontFamily
 import com.example.ui.theme.JostFontFamily
 import com.example.ui.theme.MonoLabelStyle
@@ -107,7 +108,7 @@ fun clockFontFamilyFor(style: ClockNumberStyle): FontFamily = when (style) {
     ClockNumberStyle.SLIM_LIGHT_MODERN -> JostFontFamily
     ClockNumberStyle.RETRO_STENCIL -> StardosStencilFontFamily
     ClockNumberStyle.OUTLINE_DIGITAL -> MontserratAlternatesFontFamily
-    ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> CinzelDecorativeFontFamily
+    ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> AbrilFatfaceFontFamily
     ClockNumberStyle.BOLD_ROUNDED_SANS -> FredokaFontFamily
     ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> OrbitronFontFamily
 }
@@ -158,10 +159,10 @@ fun buildClockTextStyle(
             drawStyle = Stroke(width = strokePx, join = StrokeJoin.Round),
         )
         ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> TextStyle(
-            fontFamily = CinzelDecorativeFontFamily,
+            fontFamily = AbrilFatfaceFontFamily,
             fontWeight = FontWeight.Bold,
             fontSize = fontSize,
-            letterSpacing = 0.4.sp,
+            letterSpacing = (-2.0).sp,
         )
         ClockNumberStyle.BOLD_ROUNDED_SANS -> TextStyle(
             fontFamily = FredokaFontFamily,
@@ -179,9 +180,9 @@ fun buildClockTextStyle(
 }
 
 /**
- * Shared digit renderer supporting layered vintage inline stroke accents for
- * [ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF] and crisp hollow outlines for
- * [ClockNumberStyle.OUTLINE_DIGITAL].
+ * Shared digit renderer supporting authentic high-contrast ornate vintage display serif numerals
+ * with delicate inline accents for [ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF] and crisp hollow
+ * outlines for [ClockNumberStyle.OUTLINE_DIGITAL].
  */
 @Composable
 fun StyledClockDigitsText(
@@ -200,23 +201,23 @@ fun StyledClockDigitsText(
     )
     if (clockStyle == ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF) {
         val density = LocalDensity.current
-        val inlineStrokePx = with(density) { (strokeWidthDp * 0.62f).toPx() }
-        val outerHaloPx = with(density) { (strokeWidthDp * 1.15f).toPx() }
+        val inlineStrokePx = with(density) { (strokeWidthDp * 0.42f).toPx() }
+        val outerHaloPx = with(density) { (strokeWidthDp * 0.85f).toPx() }
         Box(
             modifier = modifier,
             contentAlignment = Alignment.Center,
         ) {
-            // Subtle outer vintage sheen outline
+            // Subtle outer vintage luminance edge
             Text(
                 text = timeText,
                 style = baseStyle.copy(
-                    drawStyle = Stroke(width = outerHaloPx, join = StrokeJoin.Miter),
+                    drawStyle = Stroke(width = outerHaloPx, join = StrokeJoin.Round),
                 ),
-                color = accent.copy(alpha = 0.24f),
+                color = accent.copy(alpha = 0.16f),
                 maxLines = 1,
                 softWrap = false,
             )
-            // Primary high-contrast vintage display serif fill
+            // Primary high-contrast Abril Fatface display serif fill
             Text(
                 text = timeText,
                 style = baseStyle,
@@ -224,13 +225,13 @@ fun StyledClockDigitsText(
                 maxLines = 1,
                 softWrap = false,
             )
-            // Delicate inline engraved accent stroke
+            // Delicate vintage inline accent stroke
             Text(
                 text = timeText,
                 style = baseStyle.copy(
                     drawStyle = Stroke(width = inlineStrokePx, join = StrokeJoin.Miter),
                 ),
-                color = Color(0xFF0A1216).copy(alpha = 0.62f),
+                color = Color(0xFF060C0F).copy(alpha = 0.48f),
                 maxLines = 1,
                 softWrap = false,
             )
@@ -249,8 +250,8 @@ fun StyledClockDigitsText(
 
 /**
  * Renders the AOD Clock & Date header in any of the 9 [ClockNumberStyle]s (including true hollow
- * stroke-outlined numerals, vintage inline decorative serif, and OFF mode) for both Full-Screen AOD
- * and the Live Phone Mockup.
+ * stroke-outlined numerals, vintage ornate Abril Fatface display serif, and OFF mode) for both
+ * Full-Screen AOD and the Live Phone Mockup.
  */
 @Composable
 fun AodClockDisplay(
@@ -266,11 +267,11 @@ fun AodClockDisplay(
     }
 
     val clockSize = when (clockStyle) {
-        ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> if (compactMode) 30.sp else 64.sp
-        ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> if (compactMode) 33.sp else 72.sp
+        ClockNumberStyle.GEOMETRIC_TECH_BLOCK -> if (compactMode) 30.sp else 66.sp
+        ClockNumberStyle.EDITORIAL_DECORATIVE_SERIF -> if (compactMode) 39.sp else 88.sp
         else -> if (compactMode) 36.sp else 78.sp
     }
-    val strokeDp = if (compactMode) 1.3.dp else 2.4.dp
+    val strokeDp = if (compactMode) 1.2.dp else 2.2.dp
 
     Column(
         modifier = modifier,
@@ -289,12 +290,12 @@ fun AodClockDisplay(
         Text(
             text = dateText,
             style = TextStyle(
-                fontFamily = RobotoCondensedFontFamily,
+                fontFamily = CleanDateSansFontFamily,
                 fontWeight = FontWeight.Medium,
-                fontSize = if (compactMode) 9.5.sp else 15.sp,
-                letterSpacing = if (compactMode) 0.6.sp else 1.1.sp,
+                fontSize = if (compactMode) 9.5.sp else 16.sp,
+                letterSpacing = if (compactMode) 0.3.sp else 0.4.sp,
             ),
-            color = Color(0xFF8A99AA),
+            color = Color(0xFF8C9BAC),
             maxLines = 1,
             softWrap = false,
             modifier = Modifier.testTag("aod_date_text"),
