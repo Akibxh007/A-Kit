@@ -1,0 +1,11 @@
+A-Kit is a free, open-source, offline-first utility suite built with Kotlin and Jetpack Compose for Android.
+
+Key Features:
+• Real-time Battery Telemetry: Monitor live charging wattage, voltage, temperature, current, and estimated battery runtime.
+• AMOLED Always-On Display (AOD): Customizable charging and lockscreen AOD styles with Material You aesthetics, live gauges, and quick shortcuts.
+• Drop Wi-Fi Share: Fast, offline peer-to-peer file sharing over local hotspot without needing internet or cloud uploads.
+• SnapClean: Quickly scan, review, and clean up old screenshots to free up device storage.
+• Thermal Monitor: Keep track of device temperature trends in real time.
+
+Privacy First:
+A-Kit collects zero personal data, contains no ads or trackers, and operates completely offline.
